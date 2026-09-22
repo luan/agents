@@ -231,6 +231,64 @@ test("saves nested additions as one structured value", () => {
 	]);
 });
 
+test("moving selection cancels a pending keyboard deletion", () => {
+	const saved: SettingValue[][] = [];
+	const editor = create((value) => saved.push(value));
+	editor.handleInput("a");
+	editor.handleInput("\x1b");
+	editor.handleInput("d");
+	editor.handleInput("k");
+	editor.handleInput("d");
+	editor.handleInput("\x13");
+	expect(saved[0]).toHaveLength(2);
+});
+
+test.each([1, "1"])("enum edits retain the type of %j even when labels have the same value spelling", (initial) => {
+	initTheme("dark", false);
+	setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
+	const saved: SettingValue[][] = [];
+	const editor = new StructuredListEditor({
+		label: "Entries",
+		description: "Typed values",
+		value: [{ name: "one", value: initial }],
+		schema: Type.Array(Type.Object({ name: Type.String(), value: Type.Union([Type.Literal(1), Type.Literal("1")]) })),
+		list: {
+			itemLabel: "Entry",
+			identity: "name",
+			uniqueIdentity: true,
+			minItems: 1,
+			summary: [],
+			newItem: { name: "new", value: 1 },
+			fields: [
+				{
+					key: "value",
+					label: "Value",
+					description: "Number or string",
+					type: "enum",
+					options: [
+						{ value: 1, label: "Number one", description: "" },
+						{ value: "1", label: "String one", description: "" },
+					],
+				},
+			],
+		},
+		modelOptions: [],
+		theme,
+		onSave: (value) => saved.push(value),
+		onCancel() {},
+	});
+	editor.handleInput("\r");
+	editor.handleInput("\r");
+	editor.handleInput("\r");
+	editor.handleInput("\x13");
+	expect(saved[0]).toEqual([{ name: "one", value: initial }]);
+	editor.handleInput("\r");
+	editor.handleInput(initial === 1 ? "\x1b[B" : "\x1b[A");
+	editor.handleInput("\r");
+	editor.handleInput("\x13");
+	expect(saved[1]).toEqual([{ name: "one", value: initial === 1 ? "1" : 1 }]);
+});
+
 test("shared lists and action bars keep viewport scrolling separate from keyboard selection", () => {
 	const saved: SettingValue[][] = [];
 	let cancels = 0;

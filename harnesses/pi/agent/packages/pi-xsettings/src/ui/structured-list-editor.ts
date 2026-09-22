@@ -11,6 +11,7 @@ import {
 import {
 	ComponentStack,
 	DialogButtonBar,
+	type DialogButtonSpec,
 	type DialogHost,
 	type DialogOverlayOptions,
 	icon,
@@ -45,6 +46,42 @@ interface ItemFrame {
 type Frame = ListFrame | ItemFrame;
 type EditorAction = "add" | "delete" | "move-up" | "move-down" | "save" | "back" | "cancel";
 
+const BUTTONS = {
+	add: { value: "add", label: "Add", foreground: "positive", background: "action.positive", align: "start" },
+	delete: { value: "delete", label: "Delete", foreground: "negative", background: "action.negative", align: "start" },
+	"move-up": {
+		value: "move-up",
+		label: "Move Up",
+		foreground: "text.primary",
+		background: "action.neutral",
+		align: "start",
+	},
+	"move-down": {
+		value: "move-down",
+		label: "Move Down",
+		foreground: "text.primary",
+		background: "action.neutral",
+		align: "start",
+	},
+	back: { value: "back", label: "Back", foreground: "text.primary", background: "action.neutral" },
+	cancel: {
+		value: "cancel",
+		label: "Cancel",
+		icon: "cancel",
+		foreground: "text.primary",
+		background: "action.neutral",
+		align: "end",
+	},
+	save: {
+		value: "save",
+		label: "Save",
+		icon: "confirm",
+		foreground: "positive",
+		background: "action.positive",
+		align: "end",
+	},
+} satisfies Record<EditorAction, DialogButtonSpec<EditorAction>>;
+
 class InlineStringEditor extends ComponentStack {
 	private readonly input: SemanticInput;
 
@@ -64,22 +101,7 @@ class InlineStringEditor extends ComponentStack {
 		const buttons = new DialogButtonBar({
 			theme,
 			leading: () => colors.fg("text.muted", "Enter save · Esc cancel"),
-			buttons: [
-				{
-					value: "cancel",
-					label: "Cancel",
-					icon: "cancel",
-					foreground: "text.primary",
-					background: "action.neutral",
-				},
-				{
-					value: "save",
-					label: "Save",
-					icon: "confirm",
-					foreground: "positive",
-					background: "action.positive",
-				},
-			],
+			buttons: [BUTTONS.cancel, BUTTONS.save],
 			requestRender() {},
 			onActivate: (action) => (action === "save" ? done(input.getValue()) : done()),
 		});
@@ -120,8 +142,7 @@ export class StructuredListEditor extends ComponentStack {
 	private readonly frames: Frame[];
 	private activeEditor: Component | undefined;
 	private closeActiveEditor: (() => void) | undefined;
-	private discardPending = false;
-	private deletePending = false;
+	private confirmation: "delete" | "discard" | undefined;
 	private status = "";
 	private activeList:
 		| (Component & {
@@ -132,7 +153,7 @@ export class StructuredListEditor extends ComponentStack {
 
 	constructor(private readonly editorOptions: StructuredListEditorOptions) {
 		super();
-		this.draft = cloneValue(editorOptions.value);
+		this.draft = structuredClone(editorOptions.value);
 		this.initial = JSON.stringify(editorOptions.value);
 		this.frames = [{ kind: "list", definition: editorOptions.list, path: [], selected: 0 }];
 		this.refreshLayout();
@@ -157,19 +178,15 @@ export class StructuredListEditor extends ComponentStack {
 			this.backOrCancel();
 			return;
 		}
-		this.discardPending = false;
-		this.status = "";
+		const deleteConfirmed = this.confirmation === "delete";
+		this.clearStatus();
 		if (data === "j" || keys.matches(data, "tui.select.down")) this.activeList?.handleInput(data);
 		else if (data === "k" || keys.matches(data, "tui.select.up")) this.activeList?.handleInput(data);
 		else if (matchesKey(data, "home")) this.select(0);
 		else if (data === "G" || matchesKey(data, "end")) this.select(this.rowCount(frame) - 1);
 		else if (keys.matches(data, "tui.select.confirm")) this.activeList?.handleInput(data);
-		else if (frame.kind === "list") this.handleListInput(frame, data);
+		else if (frame.kind === "list") this.handleListInput(frame, data, deleteConfirmed);
 		else this.handleItemInput(frame, data);
-	}
-
-	invalidate(): void {
-		super.invalidate();
 	}
 
 	private frame(): Frame {
@@ -188,16 +205,16 @@ export class StructuredListEditor extends ComponentStack {
 		this.activeList?.setSelectedIndex(frame.selected);
 	}
 
-	private handleListInput(frame: ListFrame, data: string): void {
+	private handleListInput(frame: ListFrame, data: string, deleteConfirmed: boolean): void {
 		const shortcut = frame.definition.fields.findIndex((field) => field.shortcut === data);
 		if (shortcut >= 0) this.openSelectedField(frame, shortcut);
 		else if (matchesKey(data, "ctrl+j")) this.reorder(frame, 1);
 		else if (matchesKey(data, "ctrl+k")) this.reorder(frame, -1);
 		else if (data === "a") this.add(frame);
 		else if (data === "d") {
-			if (this.deletePending) this.remove(frame);
+			if (deleteConfirmed) this.remove(frame);
 			else {
-				this.deletePending = true;
+				this.confirmation = "delete";
 				this.status = "Press d again to delete.";
 			}
 		}
@@ -243,7 +260,7 @@ export class StructuredListEditor extends ComponentStack {
 			this.refreshLayout();
 			return;
 		}
-		const done = (value?: string): void => {
+		const done = (value?: SettingValue): void => {
 			if (value !== undefined) item[field.key] = value;
 			this.closeEditor();
 		};
@@ -264,18 +281,19 @@ export class StructuredListEditor extends ComponentStack {
 		}
 		const options = Array.isArray(field.options) ? field.options : this.editorOptions.modelOptions;
 		const current = item[field.key];
+		// Option IDs distinguish numeric and string values with the same spelling.
 		const editor = new SearchableSelect({
 			title: field.label,
 			showTitle: false,
 			description: field.description,
-			options: options.map((option) => ({
+			options: options.map((option, index) => ({
 				...option,
-				value: String(option.value),
+				value: String(index),
 				label: option.color ? this.colors().fg(option.color, option.label) : option.label,
 			})),
-			selected: typeof current === "string" ? current : undefined,
+			selected: String(options.findIndex((option) => option.value === current)),
 			theme: this.editorOptions.theme,
-			onSelect: done,
+			onSelect: (index) => done(options[Number(index)]?.value),
 			onCancel: () => done(),
 		});
 		this.openEditor(editor, {
@@ -311,7 +329,7 @@ export class StructuredListEditor extends ComponentStack {
 
 	private add(frame: ListFrame): void {
 		const list = this.listAt(frame.path);
-		const item = cloneValue(frame.definition.newItem);
+		const item = structuredClone(frame.definition.newItem);
 		const identity = item[frame.definition.identity];
 		if (frame.definition.uniqueIdentity && typeof identity === "string") {
 			const used = new Set(
@@ -338,7 +356,7 @@ export class StructuredListEditor extends ComponentStack {
 
 	private remove(frame: ListFrame): void {
 		const list = this.listAt(frame.path);
-		this.deletePending = false;
+		this.confirmation = undefined;
 		if (list.length <= frame.definition.minItems) {
 			this.status = `Keep at least ${frame.definition.minItems} ${frame.definition.itemLabel}${frame.definition.minItems === 1 ? "" : "s"}.`;
 			return;
@@ -354,15 +372,13 @@ export class StructuredListEditor extends ComponentStack {
 			this.status = "Some list values are invalid. Fix them before saving.";
 			return;
 		}
-		this.editorOptions.onSave(cloneValue(this.draft));
+		this.editorOptions.onSave(structuredClone(this.draft));
 	}
 
 	private backOrCancel(): void {
 		if (this.frames.length > 1) {
 			this.frames.pop();
-			this.deletePending = false;
-			this.discardPending = false;
-			this.status = "";
+			this.clearStatus();
 			this.refreshLayout();
 			return;
 		}
@@ -370,15 +386,15 @@ export class StructuredListEditor extends ComponentStack {
 	}
 
 	private cancelDraft(): void {
-		if (!this.dirty() || this.discardPending) this.editorOptions.onCancel();
+		if (!this.dirty() || this.confirmation === "discard") this.editorOptions.onCancel();
 		else {
-			this.discardPending = true;
+			this.confirmation = "discard";
 			this.status = "Unsaved changes. Press Esc/q again to discard.";
 		}
 	}
 
 	private activateListItem(frame: ListFrame, index: number): void {
-		this.deletePending = false;
+		this.confirmation = undefined;
 		const list = this.listAt(frame.path);
 		if (!list[index]) return;
 		frame.selected = index;
@@ -393,9 +409,7 @@ export class StructuredListEditor extends ComponentStack {
 
 	private performAction(action: EditorAction): void {
 		if (action !== "cancel") {
-			this.discardPending = false;
-			this.deletePending = false;
-			this.status = "";
+			this.clearStatus();
 		}
 		const frame = this.frame();
 		if (action === "save") this.save();
@@ -429,6 +443,7 @@ export class StructuredListEditor extends ComponentStack {
 				renderItem: (item, context) => this.renderListRow(frame.definition, item, context),
 				requestRender() {},
 				onSelectionChange: (_item, index) => {
+					this.clearStatus();
 					frame.selected = index;
 				},
 				onActivate: (_item, index) => this.activateListItem(frame, index),
@@ -463,90 +478,14 @@ export class StructuredListEditor extends ComponentStack {
 					"text.muted",
 					`${frame.kind === "list" ? "↑↓ move · Enter fields" : "↑↓ move · Enter edit"}${this.shortcutHint(frame.definition)}`,
 				),
-			buttons:
-				frame.kind === "list"
-					? [
-							{
-								value: "add",
-								label: "Add",
-								foreground: "positive",
-								background: "action.positive",
-								align: "start",
-							},
-							{
-								value: "delete",
-								label: "Delete",
-								foreground: "negative",
-								background: "action.negative",
-								align: "start",
-							},
-							{
-								value: "move-up",
-								label: "Move Up",
-								foreground: "text.primary",
-								background: "action.neutral",
-								align: "start",
-							},
-							{
-								value: "move-down",
-								label: "Move Down",
-								foreground: "text.primary",
-								background: "action.neutral",
-								align: "start",
-							},
-							...(this.frames.length > 1
-								? [
-										{
-											value: "back" as const,
-											label: "Back",
-											foreground: "text.primary" as const,
-											background: "action.neutral" as const,
-											align: "end" as const,
-										},
-									]
-								: []),
-							{
-								value: "cancel",
-								label: "Cancel",
-								icon: "cancel",
-								foreground: "text.primary",
-								background: "action.neutral",
-								align: "end",
-							},
-							{
-								value: "save",
-								label: "Save",
-								icon: "confirm",
-								foreground: "positive",
-								background: "action.positive",
-								align: "end",
-							},
-						]
-					: [
-							{
-								value: "back",
-								label: "Back",
-								foreground: "text.primary",
-								background: "action.neutral",
-								align: "start",
-							},
-							{
-								value: "cancel",
-								label: "Cancel",
-								icon: "cancel",
-								foreground: "text.primary",
-								background: "action.neutral",
-								align: "end",
-							},
-							{
-								value: "save",
-								label: "Save",
-								icon: "confirm",
-								foreground: "positive",
-								background: "action.positive",
-								align: "end",
-							},
-						],
+			buttons: [
+				...(frame.kind === "list" ? [BUTTONS.add, BUTTONS.delete, BUTTONS["move-up"], BUTTONS["move-down"]] : []),
+				...(this.frames.length > 1
+					? [{ ...BUTTONS.back, align: frame.kind === "list" ? ("end" as const) : ("start" as const) }]
+					: []),
+				BUTTONS.cancel,
+				BUTTONS.save,
+			],
 			requestRender() {},
 			onActivate: (action) => this.performAction(action),
 		});
@@ -627,8 +566,13 @@ export class StructuredListEditor extends ComponentStack {
 		return context.selected || context.hovered ? this.colors().bg("surface.selected", filled) : filled;
 	}
 
+	private clearStatus(): void {
+		this.confirmation = undefined;
+		this.status = "";
+	}
+
 	private renderStatus(): string {
-		return this.colors().fg(this.discardPending || this.deletePending ? "warning" : "text.muted", this.status);
+		return this.colors().fg(this.confirmation ? "warning" : "text.muted", this.status);
 	}
 
 	private formatField(field: ListItemField, value: SettingValue | undefined): string {
@@ -653,31 +597,16 @@ export class StructuredListEditor extends ComponentStack {
 	}
 
 	private listAt(path: Path): SettingValue[] {
-		const value = this.valueAt(path);
+		const value = valueAt(this.draft, path);
 		if (!Array.isArray(value)) throw new Error(`Expected a list at ${path.join(".") || "root"}.`);
 		return value;
 	}
 
 	private objectAt(path: Path): SettingObject {
-		const value = this.valueAt(path);
+		const value = valueAt(this.draft, path);
 		const object = asObject(value);
 		if (!object) throw new Error(`Expected an item at ${path.join(".")}.`);
 		return object;
-	}
-
-	private valueAt(path: Path): SettingValue {
-		let value: SettingValue = this.draft;
-		for (const segment of path) {
-			if (typeof segment === "number") {
-				if (!Array.isArray(value)) throw new Error(`Expected a list before ${segment}.`);
-				value = value[segment]!;
-			} else {
-				const object = asObject(value);
-				if (!object) throw new Error(`Expected an item before ${segment}.`);
-				value = object[segment]!;
-			}
-		}
-		return value;
 	}
 }
 
@@ -720,11 +649,4 @@ function validList(values: SettingValue[], definition: ListDefinition): boolean 
 			return Array.isArray(nested) && validList(nested, field.list);
 		});
 	});
-}
-
-function cloneValue<Value extends SettingValue>(value: Value): Value {
-	if (Array.isArray(value)) return value.map((entry) => cloneValue(entry)) as Value;
-	if (typeof value === "object")
-		return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, cloneValue(entry)])) as Value;
-	return value;
 }

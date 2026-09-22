@@ -193,6 +193,7 @@ create a separate settings file or settings screen.
 | Value resolution, publication, reload decision | `src/runtime/settings.ts`, `src/runtime/apply.ts` |
 | Keybinding bridge and effort actions | `src/runtime/actions.ts`, `src/runtime/effort.ts` |
 | Editor session, fields, list editors, screen | `src/ui/` |
+| Animated option previews and scheduler lifecycle | `src/ui/animation-select.ts` |
 
 ## Develop
 

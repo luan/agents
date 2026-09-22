@@ -24,6 +24,7 @@ import {
 import type { TuiMouseEvent } from "@luan.sh/pi-libtui/mouse";
 import type { SettingApply, SettingCategory, SettingOption, SettingPage, SettingValue } from "../protocol/settings.ts";
 import { settingOptionsFromValue } from "../runtime/options.ts";
+import { RenderLines } from "./fields.ts";
 import { type SettingField, SettingsEditor } from "./settings-editor.ts";
 
 interface SettingsPage {
@@ -32,18 +33,16 @@ interface SettingsPage {
 	icon: TuiIconName;
 }
 
-function pages(): SettingsPage[] {
-	return [
-		{ id: "ui", label: "UI", icon: "appearance" },
-		{ id: "editor", label: "Editor", icon: "edit" },
-		{ id: "ux", label: "UX", icon: "ux" },
-		{ id: "animations", label: "Animations", icon: "animations" },
-		{ id: "terminal", label: "Terminal", icon: "code-mode" },
-		{ id: "behavior", label: "Behavior", icon: "behavior" },
-		{ id: "interaction", label: "Interaction", icon: "interaction" },
-		{ id: "tools", label: "Tools", icon: "tools" },
-	];
-}
+const settingsPages: readonly SettingsPage[] = [
+	{ id: "ui", label: "UI", icon: "appearance" },
+	{ id: "editor", label: "Editor", icon: "edit" },
+	{ id: "ux", label: "UX", icon: "ux" },
+	{ id: "animations", label: "Animations", icon: "animations" },
+	{ id: "terminal", label: "Terminal", icon: "code-mode" },
+	{ id: "behavior", label: "Behavior", icon: "behavior" },
+	{ id: "interaction", label: "Interaction", icon: "interaction" },
+	{ id: "tools", label: "Tools", icon: "tools" },
+];
 
 function pageLabel(page: SettingsPage): string {
 	return `${icon(page.icon)} ${page.label}`;
@@ -66,15 +65,6 @@ export type SettingsScreenField = SettingField & {
 	page?: SettingPage;
 	storagePath: string[];
 };
-
-class RenderedLines implements Component {
-	constructor(private readonly lines: readonly string[]) {}
-	handleInput(): void {}
-	invalidate(): void {}
-	render(): string[] {
-		return [...this.lines];
-	}
-}
 
 class SidebarSearch implements Component, Focusable {
 	private _focused = false;
@@ -136,6 +126,21 @@ class SidebarSearch implements Component, Focusable {
 	}
 }
 
+type FocusArea = "content" | "sidebar" | "search";
+
+interface PageNavigation {
+	activePage(): SettingPage;
+	entries(): readonly SidebarEntry[];
+	selectedEntry(): number;
+	activeEntry(): number;
+	focusArea(): FocusArea;
+	onSelect(entry: SidebarEntry): void;
+	onSearchFocus(): void;
+	sidebarHint(width: number): string;
+	contentHint(width: number): string;
+	requestRender(): void;
+}
+
 class PageColumns implements Component {
 	private editor!: SettingsEditor;
 	private _focused = false;
@@ -148,18 +153,8 @@ class PageColumns implements Component {
 
 	constructor(
 		private readonly theme: Theme,
-		private readonly activePage: () => SettingPage,
-		private readonly entries: () => readonly SidebarEntry[],
-		private readonly selectedEntry: () => number,
-		private readonly activeEntry: () => number,
-		private readonly sidebarFocused: () => boolean,
-		private readonly onSelect: (entry: SidebarEntry) => void,
 		private readonly search: SidebarSearch,
-		private readonly searchActive: () => boolean,
-		private readonly onSearchFocus: () => void,
-		private readonly sidebarHint: (width: number) => string,
-		private readonly contentHint: (width: number) => string,
-		private readonly requestRender: () => void,
+		private readonly navigation: PageNavigation,
 	) {}
 
 	get focused(): boolean {
@@ -176,13 +171,9 @@ class PageColumns implements Component {
 		this.updateFocus();
 	}
 
-	setSearchActive(active: boolean): void {
-		this.search.focused = this._focused && active;
-		this.editor.focused = this._focused && !active && !this.sidebarFocused();
-	}
-
-	private updateFocus(): void {
-		this.setSearchActive(this.searchActive());
+	updateFocus(): void {
+		this.search.focused = this._focused && this.navigation.focusArea() === "search";
+		this.editor.focused = this._focused && this.navigation.focusArea() === "content";
 	}
 
 	getBodyOffset(): number {
@@ -196,7 +187,7 @@ class PageColumns implements Component {
 	}
 
 	render(width: number): string[] {
-		const entries = this.entries();
+		const entries = this.navigation.entries();
 		const sidebarWidth = Math.min(
 			22,
 			Math.max(
@@ -214,16 +205,20 @@ class PageColumns implements Component {
 		const bodyWidth = Math.max(1, this.renderedWidth - this.bodyOffset);
 		const body = this.editor.render(bodyWidth);
 		const searchLines = this.search.render(sidebarWidth);
+		const selectedEntry = this.navigation.selectedEntry();
+		const activeEntry = this.navigation.focusArea() === "search" ? undefined : this.navigation.activeEntry();
+		const activePage = this.navigation.activePage();
+		const sidebarFocused = this.navigation.focusArea() !== "content";
 		const visibleEntryCount = Math.max(1, body.length - searchLines.length);
 		this.sidebarVisibleCount = visibleEntryCount;
 		const maxStart = Math.max(0, entries.length - visibleEntryCount);
-		this.sidebarStart = Math.min(maxStart, Math.max(0, this.selectedEntry() - Math.max(0, visibleEntryCount - 1)));
+		this.sidebarStart = Math.min(maxStart, Math.max(0, selectedEntry - Math.max(0, visibleEntryCount - 1)));
 		const visibleEntries = entries.slice(this.sidebarStart, this.sidebarStart + visibleEntryCount);
 		const height = Math.max(body.length + 1, searchLines.length + visibleEntries.length + 1);
 		const colors = tuiTheme(this.theme);
 		const focusedSurface = colors.mixForeground(colors.color("surface.inset"), colors.color("surface.selected"), 0.5);
-		const sidebarBackground = this.sidebarFocused() ? focusedSurface : colors.color("surface.inset");
-		const contentBackground = this.sidebarFocused() ? colors.color("surface.inset") : focusedSurface;
+		const sidebarBackground = sidebarFocused ? focusedSurface : colors.color("surface.inset");
+		const contentBackground = sidebarFocused ? colors.color("surface.inset") : focusedSurface;
 		const sidebarHintBackground = colors.mixForeground(sidebarBackground, colors.color("surface.selected"), 0.22);
 		const contentHintBackground = colors.mixForeground(contentBackground, colors.color("surface.selected"), 0.22);
 		const hintForeground = colors.mixForeground(colors.color("text.muted"), colors.color("text.secondary"), 0.6);
@@ -232,50 +227,41 @@ class PageColumns implements Component {
 			const clipped = truncateToWidth(colors.fg(hintForeground, text), rowWidth, "");
 			return colors.bg(background, clipped + " ".repeat(Math.max(0, rowWidth - visibleWidth(clipped))));
 		};
+		const renderLabel = (entry: SidebarEntry, selected: boolean, current: boolean): string => {
+			const marker = current ? `${icon("selection")} ` : "  ";
+			const label = entry.kind === "section" ? ` ${marker}${entry.section ?? ""}` : pageLabel(entry.page);
+			if (selected) return this.theme.bold(colors.fg("accent", label));
+			if (entry.kind === "section") return colors.fg(subcategoryText, label);
+			if (entry.page.id === activePage) return this.theme.bold(colors.fg("accent", label));
+			return colors.fg("text.primary", label);
+		};
 		const sidebarRows = Array.from({ length: height }, (_, row) => {
-			if (row === height - 1) return hintRow(this.sidebarHint(sidebarWidth), sidebarWidth, sidebarHintBackground);
+			if (row === height - 1)
+				return hintRow(this.navigation.sidebarHint(sidebarWidth), sidebarWidth, sidebarHintBackground);
 			const entryIndex = this.sidebarStart + row - searchLines.length;
 			const entry = visibleEntries[row - searchLines.length];
-			const active = entry?.page.id === this.activePage();
-			const selected = this.sidebarFocused() && entryIndex === this.selectedEntry();
-			const current = !this.searchActive() && entryIndex === this.activeEntry();
-			const sidebarContent =
-				row < searchLines.length
-					? (searchLines[row] ?? "")
-					: entry
-						? (() => {
-								const marker = current ? `${icon("selection")} ` : "  ";
-								const label = entry.kind === "section" ? ` ${marker}${entry.section ?? ""}` : pageLabel(entry.page);
-								if (selected) return this.theme.bold(colors.fg("accent", label));
-								if (entry.kind === "section") {
-									return colors.fg(subcategoryText, label);
-								}
-								if (active) return this.theme.bold(colors.fg("accent", label));
-								return colors.fg("text.primary", label);
-							})()
-						: "";
-			const styled = sidebarContent;
-			const sidebar = truncateToWidth(styled, sidebarWidth, "");
+			const selected = sidebarFocused && entryIndex === selectedEntry;
+			const current = entryIndex === activeEntry;
+			const content =
+				row < searchLines.length ? (searchLines[row] ?? "") : entry ? renderLabel(entry, selected, current) : "";
+			const sidebar = truncateToWidth(content, sidebarWidth, "");
 			const padded = sidebar + " ".repeat(Math.max(0, sidebarWidth - visibleWidth(sidebar)));
-			const painted = current
-				? colors.bg("surface.selected", padded)
-				: selected || this.hoverIndex === entryIndex
-					? colors.bg("surface.hover", padded)
-					: padded;
-			return painted;
+			if (current) return colors.bg("surface.selected", padded);
+			if (selected || this.hoverIndex === entryIndex) return colors.bg("surface.hover", padded);
+			return padded;
 		});
 		const sidebar = new BackgroundSurface({
 			theme: this.theme,
-			component: new RenderedLines(sidebarRows),
+			component: new RenderLines(() => [...sidebarRows]),
 			background: sidebarBackground,
 		}).render(sidebarWidth);
 		const contentRows = Array.from({ length: height }, (_, row) => {
-			if (row === height - 1) return hintRow(this.contentHint(bodyWidth), bodyWidth, contentHintBackground);
+			if (row === height - 1) return hintRow(this.navigation.contentHint(bodyWidth), bodyWidth, contentHintBackground);
 			return body[row] ?? "";
 		});
 		const content = new BackgroundSurface({
 			theme: this.theme,
-			component: new RenderedLines(contentRows),
+			component: new RenderLines(() => [...contentRows]),
 			background: contentBackground,
 		}).render(bodyWidth);
 		return Array.from({ length: height }, (_, row) => {
@@ -296,15 +282,17 @@ class PageColumns implements Component {
 			this.hoverIndex = undefined;
 			this.pressedIndex = undefined;
 			this.editor.onMouse({ ...event, col: event.col - this.bodyOffset });
-			if (changed) this.requestRender();
+			if (changed) this.navigation.requestRender();
 			return false;
 		}
 		if (event.type === "wheel") {
 			return this.editor.onMouse({ ...event, col: Math.max(0, event.col - this.bodyOffset) });
 		}
-		const entries = this.entries();
+		const pressed = this.pressedIndex;
+		if (event.type === "release") this.pressedIndex = undefined;
+		const entries = this.navigation.entries();
 		if (event.col < this.bodyOffset - 1 && event.row === 0) {
-			if (event.type === "press" && event.button === 0 && !this.editor.isEditing()) this.onSearchFocus();
+			if (event.type === "press" && event.button === 0 && !this.editor.isEditing()) this.navigation.onSearchFocus();
 			return true;
 		}
 		const index =
@@ -318,20 +306,18 @@ class PageColumns implements Component {
 			this.editor.onMouse({ ...event, type: "leave", col: event.col - this.bodyOffset });
 			if (this.hoverIndex !== absoluteIndex) {
 				this.hoverIndex = absoluteIndex;
-				this.requestRender();
+				this.navigation.requestRender();
 			}
 			if (event.type === "press" && event.button === 0) this.pressedIndex = absoluteIndex;
 			if (event.type === "release" && event.button === 0) {
-				const pressed = this.pressedIndex;
-				this.pressedIndex = undefined;
 				const entry = entries[absoluteIndex];
-				if (pressed === absoluteIndex && entry) this.onSelect(entry);
+				if (pressed === absoluteIndex && entry) this.navigation.onSelect(entry);
 			}
 			return true;
 		}
 		if (this.hoverIndex !== undefined) {
 			this.hoverIndex = undefined;
-			this.requestRender();
+			this.navigation.requestRender();
 		}
 		return event.col >= this.bodyOffset ? this.editor.onMouse({ ...event, col: event.col - this.bodyOffset }) : false;
 	}
@@ -341,8 +327,7 @@ export class XSettingsScreen extends ComponentStack {
 	private fields: SettingsScreenField[];
 	private activePage: SettingPage;
 	private sidebarCursor = 0;
-	private sidebarFocused = false;
-	private searchActive = false;
+	private focusArea: FocusArea = "content";
 	private readonly search: SidebarSearch;
 	private editor!: SettingsEditor;
 	private readonly pageColumns: PageColumns;
@@ -369,28 +354,24 @@ export class XSettingsScreen extends ComponentStack {
 			() => this.finishSearch(),
 			() => {
 				this.clearSearch();
-				this.sidebarFocused = false;
-				this.pageColumns.setSearchActive(false);
+				this.setFocus("content");
 			},
 		);
 		this.activePage = pageFor(
 			fields.find((field) => field.id === initialFieldId) ?? fields[0] ?? { category: "appearance" },
 		);
-		this.pageColumns = new PageColumns(
-			theme,
-			() => this.activePage,
-			() => this.sidebarEntries(),
-			() => this.sidebarCursor,
-			() => this.activeSidebarEntry(),
-			() => this.sidebarFocused,
-			(entry) => this.selectSidebarEntry(entry),
-			this.search,
-			() => this.searchActive,
-			() => this.setSearchActive(true),
-			(width) => this.sidebarNavigationHint(width),
-			(width) => this.contentNavigationHint(width),
+		this.pageColumns = new PageColumns(theme, this.search, {
+			activePage: () => this.activePage,
+			entries: () => this.sidebarEntries(),
+			selectedEntry: () => this.sidebarCursor,
+			activeEntry: () => this.activeSidebarEntry(),
+			focusArea: () => this.focusArea,
+			onSelect: (entry) => this.selectSidebarEntry(entry),
+			onSearchFocus: () => this.setFocus("search"),
+			sidebarHint: (width) => this.sidebarNavigationHint(width),
+			contentHint: (width) => this.contentNavigationHint(width),
 			requestRender,
-		);
+		});
 		this.rebuild(initialFieldId);
 	}
 
@@ -409,13 +390,13 @@ export class XSettingsScreen extends ComponentStack {
 
 	private sidebarNavigationHint(width: number): string {
 		const keybindings = getKeybindings();
-		if (this.searchActive) {
+		if (this.focusArea === "search") {
 			return this.hint(width, [
 				[[keybindings.getKeys("tui.select.confirm")[0]], "results"],
 				[[keybindings.getKeys("tui.select.cancel")[0]], "clear"],
 			]);
 		}
-		if (!this.sidebarFocused) return this.hint(width, [[[this.sidebarToggleKey ?? "tab"], "focus"]]);
+		if (this.focusArea === "content") return this.hint(width, [[[this.sidebarToggleKey ?? "tab"], "focus"]]);
 		return this.hint(width, [
 			[[keybindings.getKeys("tui.select.confirm")[0]], "switch"],
 			[[keybindings.getKeys("tui.select.up")[0], keybindings.getKeys("tui.select.down")[0]], "move"],
@@ -426,7 +407,7 @@ export class XSettingsScreen extends ComponentStack {
 	private contentNavigationHint(width: number): string {
 		if (this.editor?.isEditing()) return "";
 		const keybindings = getKeybindings();
-		if (this.sidebarFocused || this.searchActive) {
+		if (this.focusArea !== "content") {
 			return this.hint(width, [[[this.sidebarToggleKey ?? "tab"], "focus"]]);
 		}
 		return this.hint(width, [
@@ -437,9 +418,7 @@ export class XSettingsScreen extends ComponentStack {
 
 	toggleCursor(): void {
 		if (this.editor.isEditing()) return;
-		this.searchActive = false;
-		this.sidebarFocused = !this.sidebarFocused;
-		this.pageColumns.setSearchActive(false);
+		this.setFocus(this.focusArea === "content" ? "sidebar" : "content");
 		this.requestRender();
 	}
 
@@ -448,17 +427,17 @@ export class XSettingsScreen extends ComponentStack {
 			this.editor.handleInput(data);
 		} else if (matchesKey(data, this.sidebarToggleKey ?? "tab")) {
 			this.toggleCursor();
-		} else if (this.searchActive) {
+		} else if (this.focusArea === "search") {
 			this.search.handleInput(data);
 		} else if (data === "/") {
-			this.setSearchActive(true);
-		} else if (this.sidebarFocused) {
+			this.setFocus("search");
+		} else if (this.focusArea === "sidebar") {
 			this.handleSidebarInput(data);
 		} else if (!this.editor.handleInput(data)) {
 			if (matchesKey(data, "right") || data === "l") this.movePage(1);
 			else if (matchesKey(data, "left") || data === "h") this.movePage(-1);
 		}
-		if (!this.sidebarFocused && !this.searchActive) this.syncSidebarSelection();
+		if (this.focusArea === "content") this.syncSidebarSelection();
 		this.requestRender();
 	}
 
@@ -497,7 +476,7 @@ export class XSettingsScreen extends ComponentStack {
 			initialFieldId,
 			editorDialogs,
 			this.requestRender,
-			pageLabel(pages().find((page) => page.id === this.activePage)!),
+			pageLabel(settingsPages.find((page) => page.id === this.activePage)!),
 			this.onPreview,
 		);
 		this.pageColumns.setEditor(this.editor);
@@ -507,24 +486,15 @@ export class XSettingsScreen extends ComponentStack {
 
 	private sidebarEntries(): SidebarEntry[] {
 		const result: SidebarEntry[] = [];
-		for (const page of pages()) {
+		for (const page of settingsPages) {
 			result.push({ kind: "page", page });
-			const sections: Array<{ section: string; fieldId: string }> = [];
 			const seen = new Set<string>();
 			for (const field of this.fields) {
 				if (pageFor(field) !== page.id) continue;
 				const section = field.section ?? "General";
 				if (seen.has(section)) continue;
 				seen.add(section);
-				sections.push({ section, fieldId: field.id });
-			}
-			for (const entry of sections) {
-				result.push({
-					kind: "section",
-					page,
-					section: entry.section,
-					fieldId: entry.fieldId,
-				});
+				result.push({ kind: "section", page, section, fieldId: field.id });
 			}
 		}
 		return result;
@@ -561,7 +531,7 @@ export class XSettingsScreen extends ComponentStack {
 		const query = this.search.getValue().toLowerCase().trim().split(/\s+/u).filter(Boolean);
 		if (query.length === 0) return this.fields.filter((field) => pageFor(field) === this.activePage);
 		return this.fields.filter((field) => {
-			const page = pages().find((candidate) => candidate.id === pageFor(field));
+			const page = settingsPages.find((candidate) => candidate.id === pageFor(field));
 			const text = `${page?.label ?? ""} ${field.section ?? ""} ${field.label} ${field.description}`.toLowerCase();
 			return query.every((token) => text.includes(token));
 		});
@@ -572,23 +542,20 @@ export class XSettingsScreen extends ComponentStack {
 		this.editor.setFields(this.visibleFields());
 	}
 
-	private setSearchActive(active: boolean): void {
-		if (active && this.editor?.isEditing()) return;
-		if (active) this.sidebarFocused = true;
-		this.searchActive = active;
-		this.pageColumns?.setSearchActive(active);
+	private setFocus(area: FocusArea): void {
+		if (this.editor.isEditing()) return;
+		this.focusArea = area;
+		this.pageColumns.updateFocus();
 	}
 
 	private clearSearch(): void {
 		this.search.setValue("");
-		this.setSearchActive(false);
+		if (this.focusArea === "search") this.setFocus("sidebar");
 		this.applySearch();
 	}
 
 	private finishSearch(): void {
-		this.setSearchActive(false);
-		this.sidebarFocused = false;
-		this.pageColumns.setSearchActive(false);
+		this.setFocus("content");
 	}
 
 	dispose(): void {
@@ -601,7 +568,7 @@ export class XSettingsScreen extends ComponentStack {
 	}
 
 	private movePage(delta: number): void {
-		const definitions = pages();
+		const definitions = settingsPages;
 		const index = definitions.findIndex((page) => page.id === this.activePage);
 		this.selectPage(definitions[(index + delta + definitions.length) % definitions.length]!.id);
 	}
@@ -624,8 +591,7 @@ export class XSettingsScreen extends ComponentStack {
 			(candidate) =>
 				candidate.kind === entry.kind && candidate.page.id === entry.page.id && candidate.section === entry.section,
 		);
-		this.sidebarFocused = !focusContent;
-		this.pageColumns.setSearchActive(false);
+		this.setFocus(focusContent ? "content" : "sidebar");
 		if (entry.kind === "section" && entry.fieldId) {
 			if (entry.page.id !== this.activePage) {
 				this.clearSearch();

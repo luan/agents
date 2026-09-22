@@ -190,6 +190,7 @@ describe("xsettings shared pointer composition", () => {
 		initTheme("dark", false);
 		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 		const resets: string[] = [];
+		const changes: Array<[string, SettingValue]> = [];
 		let closes = 0;
 		const fields: SettingsScreenField[] = [
 			{
@@ -220,7 +221,7 @@ describe("xsettings shared pointer composition", () => {
 		const screen = new XSettingsScreen(
 			fields,
 			theme,
-			() => {},
+			(id, value) => changes.push([id, value]),
 			(id) => resets.push(id),
 			() => {
 				closes += 1;
@@ -239,9 +240,27 @@ describe("xsettings shared pointer composition", () => {
 		expect(uiRow?.indexOf(icon("appearance"))).toBe(0);
 		const behaviorRow = lines.findIndex((line) => line.includes(`${icon("behavior")} Behavior`));
 		expect(behaviorRow).toBeGreaterThan(0);
+		for (const cancelled of [true, false]) {
+			dispatch(screen, { type: "press", row: behaviorRow, col: 2, button: 0 });
+			dispatch(screen, {
+				type: "release",
+				row: behaviorRow,
+				col: cancelled ? 2 : 79,
+				button: cancelled ? undefined : 0,
+			});
+			dispatch(screen, { type: "release", row: behaviorRow, col: 2, button: 0 });
+			expect(screen.render(80).map(stripTerminalSequences).join("\n")).toContain("Appearance field");
+		}
 		click(screen, behaviorRow, 2);
 		lines = screen.render(80).map(stripTerminalSequences);
 		expect(lines.join("\n")).toContain("Behavior field");
+
+		// Selecting the current page must leave even an empty search and focus its controls.
+		screen.handleInput("/");
+		screen.render(80);
+		click(screen, behaviorRow, 2);
+		screen.handleInput("\r");
+		expect(changes).toEqual([["behavior", false]]);
 
 		expect(lines.at(-1)).toContain("focus");
 		expect(lines.at(-1)).toContain("reset");
