@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AcquiredWebSocket, ProviderEnv, SessionWebSocketCacheEntry } from "./types.ts";
+import type { AcquiredWebSocket, ProviderEnv, SessionWebSocketCacheEntry, WebSocketLike } from "./types.ts";
 import {
 	closeWebSocketSilently,
 	connectWebSocket,
@@ -80,6 +80,38 @@ export function closeOpenAICodexWebSocketSessions(sessionId?: string): void {
 	websocketSseFallbackSessions.clear();
 }
 
+function transientConnection(socket: WebSocketLike): AcquiredWebSocket {
+	return { socket, reused: false, release: () => closeWebSocketSilently(socket) };
+}
+
+function retainedConnection(
+	entry: SessionWebSocketCacheEntry,
+	sessionId: string,
+	routeKey: string,
+	reused: boolean,
+): AcquiredWebSocket {
+	entry.busy = true;
+	let released = false;
+	return {
+		socket: entry.socket,
+		entry,
+		reused,
+		release: ({ keep } = {}) => {
+			if (released) return;
+			released = true;
+			const entries = websocketSessionCache.get(sessionId);
+			const owned = entries?.get(routeKey) === entry;
+			if (keep && owned && isWebSocketReusable(entry.socket)) {
+				entry.busy = false;
+				return;
+			}
+			closeWebSocketSilently(entry.socket);
+			if (owned) entries.delete(routeKey);
+			if (entries?.size === 0) websocketSessionCache.delete(sessionId);
+		},
+	};
+}
+
 export async function acquireWebSocket(
 	url: string,
 	headers: Headers,
@@ -89,83 +121,28 @@ export async function acquireWebSocket(
 	connectTimeoutMs?: number,
 	env?: ProviderEnv,
 ): Promise<AcquiredWebSocket> {
-	if (!sessionId) {
-		const socket = await connectWebSocket(url, headers, signal, connectTimeoutMs, env);
-		return {
-			socket,
-			reused: false,
-			release: ({ keep } = {}) => {
-				if (keep === false) {
-					closeWebSocketSilently(socket);
-					return;
-				}
-				closeWebSocketSilently(socket);
-			},
-		};
-	}
+	if (signal?.aborted) throw new Error("Request was aborted");
+	if (!sessionId) return transientConnection(await connectWebSocket(url, headers, signal, connectTimeoutMs, env));
 
 	const routeKey = await websocketRouteKey(url, headers, accountId, env);
-	let routeEntries = websocketSessionCache.get(sessionId);
-	const cached = routeEntries?.get(routeKey);
-	if (cached) {
-		if (!cached.busy && isWebSocketReusable(cached.socket)) {
-			cached.busy = true;
-			return {
-				socket: cached.socket,
-				entry: cached,
-				reused: true,
-				release: ({ keep } = {}) => {
-					if (!keep || !isWebSocketReusable(cached.socket)) {
-						closeWebSocketSilently(cached.socket);
-						const currentEntries = websocketSessionCache.get(sessionId);
-						if (currentEntries?.get(routeKey) === cached) currentEntries.delete(routeKey);
-						if (currentEntries?.size === 0) websocketSessionCache.delete(sessionId);
-						return;
-					}
-					cached.busy = false;
-				},
-			};
-		}
-
-		if (cached.busy) {
-			const socket = await connectWebSocket(url, headers, signal, connectTimeoutMs, env);
-			return {
-				socket,
-				reused: false,
-				release: () => {
-					closeWebSocketSilently(socket);
-				},
-			};
-		}
-
-		if (!isWebSocketReusable(cached.socket)) {
-			closeWebSocketSilently(cached.socket);
-			routeEntries?.delete(routeKey);
-			if (routeEntries?.size === 0) websocketSessionCache.delete(sessionId);
-		}
+	if (signal?.aborted) throw new Error("Request was aborted");
+	let entries = websocketSessionCache.get(sessionId);
+	const cached = entries?.get(routeKey);
+	if (cached && !cached.busy) {
+		if (isWebSocketReusable(cached.socket)) return retainedConnection(cached, sessionId, routeKey, true);
+		closeWebSocketSilently(cached.socket);
+		entries?.delete(routeKey);
 	}
 
 	const socket = await connectWebSocket(url, headers, signal, connectTimeoutMs, env);
-	const entry: SessionWebSocketCacheEntry = { socket, busy: true };
-	routeEntries = websocketSessionCache.get(sessionId);
-	if (!routeEntries) {
-		routeEntries = new Map();
-		websocketSessionCache.set(sessionId, routeEntries);
+	entries = websocketSessionCache.get(sessionId);
+	// Another concurrent acquisition may have established the retained lane while this one connected.
+	if (entries?.has(routeKey)) return transientConnection(socket);
+	if (!entries) {
+		entries = new Map();
+		websocketSessionCache.set(sessionId, entries);
 	}
-	routeEntries.set(routeKey, entry);
-	return {
-		socket,
-		entry,
-		reused: false,
-		release: ({ keep } = {}) => {
-			if (!keep || !isWebSocketReusable(entry.socket)) {
-				closeWebSocketSilently(entry.socket);
-				const currentEntries = websocketSessionCache.get(sessionId);
-				if (currentEntries?.get(routeKey) === entry) currentEntries.delete(routeKey);
-				if (currentEntries?.size === 0) websocketSessionCache.delete(sessionId);
-				return;
-			}
-			entry.busy = false;
-		},
-	};
+	const entry: SessionWebSocketCacheEntry = { socket, busy: true };
+	entries.set(routeKey, entry);
+	return retainedConnection(entry, sessionId, routeKey, false);
 }

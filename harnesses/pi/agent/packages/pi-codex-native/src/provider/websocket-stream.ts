@@ -1,13 +1,15 @@
 import type { Api, AssistantMessage, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
+import { DEFAULT_STREAM_IDLE_TIMEOUT_MS, DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS } from "./constants.ts";
+import { codexDiagnosticsFailure, noThrowCodexDiagnosticsSink } from "./diagnostic-failure.ts";
+import { type CanonicalSessionToken, recordCanonicalSessionResponse } from "./session-continuity.ts";
 import { normalizeTimeoutMs } from "./sse.ts";
-import { buildCachedWebSocketRequestBody } from "./websocket-continuation.ts";
-import { acquireWebSocket, parseWebSocket, startWebSocketOutputOnFirstEvent } from "./websocket.ts";
 import {
 	assertSuccessfulCodexOutput,
 	assertSuccessfulCodexStatus,
 	mapCodexEvents,
 	processMappedCodexResponsesStream,
 } from "./stream-events.ts";
+import type { CodexTurnState } from "./turn-state.ts";
 import type {
 	CachedWebSocketRequestBodyResult,
 	CanonicalHistoryDecision,
@@ -16,10 +18,8 @@ import type {
 	OpenAICodexStreamOptions,
 	ResponsesBody,
 } from "./types.ts";
-import type { CodexTurnState } from "./turn-state.ts";
-import { DEFAULT_STREAM_IDLE_TIMEOUT_MS, DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS } from "./constants.ts";
-import { codexDiagnosticsFailure, noThrowCodexDiagnosticsSink } from "./diagnostic-failure.ts";
-import { recordCanonicalSessionResponse, type CanonicalSessionToken } from "./session-continuity.ts";
+import { acquireWebSocket, parseWebSocket, startWebSocketOutputOnFirstEvent } from "./websocket.ts";
+import { buildCachedWebSocketRequestBody } from "./websocket-continuation.ts";
 
 export async function processWebSocketStream<TApi extends Api>(
 	url: string,
@@ -57,7 +57,6 @@ export async function processWebSocketStream<TApi extends Api>(
 		options?.env,
 	);
 	let keepConnection = true;
-	let released = false;
 	const responseItems: unknown[] = [];
 	const transport = (options as { transport?: string | undefined } | undefined)?.transport ?? "auto";
 	const useCachedContext = transport === "websocket-cached" || transport === "auto";
@@ -74,12 +73,6 @@ export async function processWebSocketStream<TApi extends Api>(
 	const requestBody = cachedRequest.body;
 	const recordDiagnostics = noThrowCodexDiagnosticsSink(diagnostics?.record);
 
-	const releaseOnce = (releaseOptions?: { keep?: boolean | undefined }) => {
-		if (released) return;
-		released = true;
-		release(releaseOptions);
-	};
-
 	try {
 		if (diagnostics && recordDiagnostics) {
 			recordDiagnostics({
@@ -95,6 +88,7 @@ export async function processWebSocketStream<TApi extends Api>(
 				previousResponseId: Boolean(requestBody.previous_response_id),
 			});
 		}
+		if (options?.signal?.aborted) throw new Error("Request was aborted");
 		socket.send(JSON.stringify({ type: "response.create", ...requestBody }));
 		await processMappedCodexResponsesStream(
 			startWebSocketOutputOnFirstEvent(
@@ -144,14 +138,12 @@ export async function processWebSocketStream<TApi extends Api>(
 				});
 			}
 		}
-		releaseOnce({ keep: keepConnection });
 	} catch (error) {
 		if (entry) entry.continuation = undefined;
 		keepConnection = false;
-		releaseOnce({ keep: false });
 		throw error;
 	} finally {
-		releaseOnce({ keep: keepConnection });
+		release({ keep: keepConnection });
 	}
 }
 
@@ -166,6 +158,10 @@ export async function prewarmWebSocket(
 ): Promise<void> {
 	const recordDiagnostics = noThrowCodexDiagnosticsSink(diagnostics);
 	const websocketConnectTimeoutMs = normalizeTimeoutMs(options.websocketConnectTimeoutMs, "websocketConnectTimeoutMs");
+	const idleTimeoutMs = normalizeTimeoutMs(
+		options.timeoutMs ?? options.websocketConnectTimeoutMs ?? DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS,
+		"timeoutMs",
+	);
 	const { socket, entry, release, reused } = await acquireWebSocket(
 		url,
 		headers,
@@ -179,10 +175,6 @@ export async function prewarmWebSocket(
 	const responseItems: unknown[] = [];
 	let responseId: string | undefined;
 	let responseStatus: string | undefined;
-	const idleTimeoutMs = normalizeTimeoutMs(
-		options.timeoutMs ?? options.websocketConnectTimeoutMs ?? DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS,
-		"timeoutMs",
-	);
 	try {
 		recordDiagnostics?.({
 			type: "request",
@@ -194,6 +186,7 @@ export async function prewarmWebSocket(
 			socketReused: reused,
 			previousResponseId: Boolean(body.previous_response_id),
 		});
+		if (options?.signal?.aborted) throw new Error("Request was aborted");
 		socket.send(JSON.stringify({ type: "response.create", ...body, generate: false }));
 		for await (const event of mapCodexEvents(
 			parseWebSocket(socket, options.signal, idleTimeoutMs, (value) => turnState?.capturePrewarm(value)),

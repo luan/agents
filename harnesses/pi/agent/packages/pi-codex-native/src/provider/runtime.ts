@@ -14,7 +14,6 @@ import { buildRequestBody } from "./request-body.ts";
 import { normalizeResponsesToolHistory } from "../responses/tool-history.ts";
 import { createCodexTransportStream, type CodexTransportRecoveryDependencies } from "./transport-recovery.ts";
 import { prewarmWebSocket } from "./websocket-stream.ts";
-import { combineAbortSignals } from "./sse.ts";
 import { closeOpenAICodexWebSocketSessions, resetOpenAICodexWebSocketSessions } from "./websocket.ts";
 import { createCodexTurnState, type CodexTurnState } from "./turn-state.ts";
 import {
@@ -33,18 +32,9 @@ import type {
 	ResponsesBody,
 } from "./types.ts";
 
-export interface CodexRuntimePlan {
-	active: boolean;
-	model?: string;
-	transport: "auto" | "sse" | "websocket" | "websocket-cached";
-	prewarm: boolean;
-}
-
-export interface CodexRuntimeState {
-	sessionId: string;
+interface CodexRuntimeState {
 	model?: string;
 	turnState: CodexTurnState;
-	plan: CodexRuntimePlan;
 	prewarmIdentity?: string;
 }
 
@@ -64,16 +54,15 @@ type RetainedRequestAuth = Pick<
 	"apiKey" | "headers" | "env" | "websocketConnectTimeoutMs" | "timeoutMs"
 >;
 
-type PrewarmOperation = {
-	controller: AbortController;
-	generation: number;
-};
-
 type RuntimeApiStreamOptions = CodexProviderStreamOptions & {
 	onPayload?: OpenAICodexStreamOptions["onPayload"];
 };
 
-function sessionIdFor(ctx: ExtensionContext): string | undefined {
+type SessionContext = Pick<ExtensionContext, "model"> & {
+	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId" | "getSessionFile">;
+};
+
+function sessionIdFor(ctx: Pick<SessionContext, "sessionManager">): string | undefined {
 	return ctx.sessionManager.getSessionId() ?? ctx.sessionManager.getSessionFile();
 }
 
@@ -123,11 +112,10 @@ export class CodexProviderRuntime {
 	private readonly models: readonly CodexModel[] = getCodexModels();
 	private readonly listeners = new Set<CodexDiagnosticsSink>();
 	private readonly requestAuth = new Map<string, RetainedRequestAuth>();
-	private readonly prewarms = new Map<string, PrewarmOperation>();
-	private readonly prewarmGenerations = new Map<string, number>();
+	private readonly requests = new Map<AbortController, CodexRuntimeState | undefined>();
+	private readonly prewarms = new Map<string, AbortController>();
 	private readonly prewarmTransport: typeof prewarmWebSocket;
 	private diagnostics?: CodexDiagnosticsSink;
-	private stopped = false;
 
 	constructor(options: CodexProviderRuntimeOptions = {}) {
 		this.diagnostics = options.diagnostics;
@@ -155,39 +143,20 @@ export class CodexProviderRuntime {
 		this.diagnostics = listener;
 	}
 
-	getRuntimeState(sessionId: string): CodexRuntimeState | undefined {
-		return this.sessions.get(sessionId);
-	}
-
-	getRuntimePlan(sessionId: string): CodexRuntimePlan | undefined {
-		return this.sessions.get(sessionId)?.plan;
-	}
-
-	startSession(ctx: ExtensionContext): void {
-		const sessionId = sessionIdFor(ctx);
-		if (!sessionId) return;
-		this.stopped = false;
-		const current = this.sessions.get(sessionId);
-		if (current) {
-			const nextModel = modelKey(ctx.model as Model<Api> | undefined);
-			if (current.model !== nextModel) this.cancelPrewarm(sessionId);
-			current.model = nextModel;
-			current.plan = this.planFor(ctx.model as Model<Api> | undefined, current.plan.transport, false);
-			return;
-		}
-		this.sessions.set(sessionId, {
-			sessionId,
-			model: modelKey(ctx.model as Model<Api> | undefined),
-			turnState: createCodexTurnState(),
-			plan: this.planFor(ctx.model as Model<Api> | undefined, "auto", false),
-		});
-	}
-
-	selectModel(ctx: ExtensionContext): void {
+	startSession(ctx: SessionContext): void {
 		const sessionId = sessionIdFor(ctx);
 		if (!sessionId) return;
 		const state = this.ensureSession(sessionId);
-		const nextModel = modelKey(ctx.model as Model<Api> | undefined);
+		const nextModel = modelKey(ctx.model);
+		if (state.model !== nextModel) this.cancelPrewarm(sessionId);
+		state.model = nextModel;
+	}
+
+	selectModel(ctx: SessionContext): void {
+		const sessionId = sessionIdFor(ctx);
+		if (!sessionId) return;
+		const state = this.ensureSession(sessionId);
+		const nextModel = modelKey(ctx.model);
 		if (state.model !== nextModel) {
 			this.cancelPrewarm(sessionId);
 			resetOpenAICodexWebSocketSessions(sessionId);
@@ -195,12 +164,13 @@ export class CodexProviderRuntime {
 			state.prewarmIdentity = undefined;
 		}
 		state.model = nextModel;
-		state.plan = this.planFor(ctx.model as Model<Api> | undefined, state.plan.transport, false);
 	}
 
-	shutdownSession(ctx: ExtensionContext): void {
+	shutdownSession(ctx: Pick<SessionContext, "sessionManager">): void {
 		const sessionId = sessionIdFor(ctx);
 		if (!sessionId) return;
+		const state = this.sessions.get(sessionId);
+		if (state) this.abortRequests(state);
 		this.cancelPrewarm(sessionId);
 		closeOpenAICodexWebSocketSessions(sessionId);
 		this.requestAuth.delete(sessionId);
@@ -208,14 +178,20 @@ export class CodexProviderRuntime {
 	}
 
 	shutdown(): void {
-		if (this.stopped) return;
-		this.stopped = true;
+		this.abortRequests();
 		for (const sessionId of this.prewarms.keys()) this.cancelPrewarm(sessionId);
 		this.prewarms.clear();
-		this.prewarmGenerations.clear();
 		this.requestAuth.clear();
 		closeOpenAICodexWebSocketSessions();
 		this.sessions.clear();
+	}
+
+	private abortRequests(owner?: CodexRuntimeState): void {
+		for (const [controller, state] of this.requests) {
+			if (owner && state !== owner) continue;
+			this.requests.delete(controller);
+			controller.abort();
+		}
 	}
 
 	resetTransportAfterCompaction(sessionId: string): void {
@@ -225,7 +201,6 @@ export class CodexProviderRuntime {
 		if (!state) return;
 		state.turnState.reset();
 		state.prewarmIdentity = undefined;
-		state.plan = { ...state.plan, active: false, prewarm: state.plan.transport !== "sse" };
 	}
 
 	async startCompactionPrewarm(input: CodexCompactionPrewarmInput): Promise<void> {
@@ -264,7 +239,7 @@ export class CodexProviderRuntime {
 		const options: OpenAICodexStreamOptions = {
 			...auth,
 			sessionId: input.sessionId,
-			signal: operation.controller.signal,
+			signal: operation.signal,
 			transport: "websocket-cached",
 			...(serviceTier ? { serviceTier: serviceTier as OpenAICodexStreamOptions["serviceTier"] } : {}),
 			...(textVerbosity ? { textVerbosity } : {}),
@@ -275,7 +250,6 @@ export class CodexProviderRuntime {
 			if (this.isCurrentPrewarm(input.sessionId, operation)) {
 				state.model = modelKey(input.model);
 				state.prewarmIdentity = identity;
-				state.plan = this.planFor(input.model, "websocket-cached", false);
 			}
 		} finally {
 			this.finishPrewarm(input.sessionId, operation);
@@ -289,6 +263,9 @@ export class CodexProviderRuntime {
 	): AssistantMessageEventStream {
 		const sessionId = options?.sessionId;
 		const state = sessionId ? this.ensureSession(sessionId) : undefined;
+		const controller = new AbortController();
+		this.requests.set(controller, state);
+		const signal = AbortSignal.any([controller.signal, options?.signal].filter((value) => value !== undefined));
 		if (sessionId && options?.apiKey) {
 			this.requestAuth.set(sessionId, {
 				apiKey: options.apiKey,
@@ -301,12 +278,12 @@ export class CodexProviderRuntime {
 			});
 		}
 		state?.turnState.beginTurn();
-		if (state) {
-			state.model = modelKey(model as Model<Api>);
-			state.plan = this.planFor(model as Model<Api>, options?.transport ?? "auto", true);
-		}
+		if (state) state.model = modelKey(model);
 		const diagnostics = () => this.getDiagnostics();
 		const deps: CodexTransportRecoveryDependencies = {
+			onStreamSettled: () => {
+				this.requests.delete(controller);
+			},
 			prepareRequestBody: async (requestModel, requestContext, requestOptions) => {
 				const grammarToolInputProperties = createGrammarToolInputProperties(requestContext.tools, true);
 				let body = buildRequestBody(requestModel, requestContext, {
@@ -330,14 +307,16 @@ export class CodexProviderRuntime {
 							const identity = createCodexPrewarmIdentity(input);
 							if (state.prewarmIdentity === identity) return;
 							const operation = this.beginPrewarm(sessionId);
-							const combinedSignal = combineAbortSignals([input.options.signal, operation.controller.signal]);
+							const signal = AbortSignal.any(
+								[input.options.signal, operation.signal].filter((value) => value !== undefined),
+							);
 							try {
 								await this.prewarmTransport(
 									input.url,
 									input.body,
 									input.headers,
 									input.accountId,
-									{ ...input.options, signal: combinedSignal.signal },
+									{ ...input.options, signal },
 									state.turnState,
 									this.getDiagnostics(),
 								);
@@ -345,13 +324,17 @@ export class CodexProviderRuntime {
 							} catch {
 								// Prewarm is an optimization. The request still uses the normal retry path.
 							} finally {
-								combinedSignal.cleanup();
 								this.finishPrewarm(sessionId, operation);
 							}
 						}
 					: undefined,
 		};
-		return createCodexTransportStream(model, context, options, deps);
+		try {
+			return createCodexTransportStream(model, context, { ...options, signal }, deps);
+		} catch (error) {
+			deps.onStreamSettled?.();
+			throw error;
+		}
 	}
 
 	streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
@@ -361,53 +344,29 @@ export class CodexProviderRuntime {
 	private ensureSession(sessionId: string): CodexRuntimeState {
 		const current = this.sessions.get(sessionId);
 		if (current) return current;
-		const state: CodexRuntimeState = {
-			sessionId,
-			turnState: createCodexTurnState(),
-			plan: this.planFor(undefined, "auto", false),
-		};
+		const state: CodexRuntimeState = { turnState: createCodexTurnState() };
 		this.sessions.set(sessionId, state);
 		return state;
 	}
 
-	private beginPrewarm(sessionId: string): PrewarmOperation {
+	private beginPrewarm(sessionId: string): AbortController {
 		this.cancelPrewarm(sessionId);
-		const generation = (this.prewarmGenerations.get(sessionId) ?? 0) + 1;
-		this.prewarmGenerations.set(sessionId, generation);
-		const operation = { controller: new AbortController(), generation };
+		const operation = new AbortController();
 		this.prewarms.set(sessionId, operation);
 		return operation;
 	}
 
 	private cancelPrewarm(sessionId: string): void {
-		this.prewarms.get(sessionId)?.controller.abort();
+		this.prewarms.get(sessionId)?.abort();
 		this.prewarms.delete(sessionId);
-		this.prewarmGenerations.set(sessionId, (this.prewarmGenerations.get(sessionId) ?? 0) + 1);
 	}
 
-	private isCurrentPrewarm(sessionId: string, operation: PrewarmOperation): boolean {
-		return (
-			this.prewarms.get(sessionId) === operation &&
-			this.prewarmGenerations.get(sessionId) === operation.generation &&
-			!operation.controller.signal.aborted
-		);
+	private isCurrentPrewarm(sessionId: string, operation: AbortController): boolean {
+		return this.prewarms.get(sessionId) === operation && !operation.signal.aborted;
 	}
 
-	private finishPrewarm(sessionId: string, operation: PrewarmOperation): void {
+	private finishPrewarm(sessionId: string, operation: AbortController): void {
 		if (this.prewarms.get(sessionId) === operation) this.prewarms.delete(sessionId);
-	}
-
-	private planFor(
-		model: Model<Api> | undefined,
-		transport: CodexRuntimePlan["transport"],
-		active: boolean,
-	): CodexRuntimePlan {
-		return {
-			active,
-			model: modelKey(model),
-			transport,
-			prewarm: transport !== "sse" && model?.provider === "openai-codex",
-		};
 	}
 
 	private getDiagnostics(): CodexDiagnosticsSink | undefined {

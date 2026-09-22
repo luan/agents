@@ -161,11 +161,6 @@ export function buildProviderErrorMessage(error: unknown): string {
 }
 
 export function createErrorMessage(message: AssistantMessage, error: unknown, aborted: boolean): AssistantMessage {
-	for (const block of message.content) {
-		if (typeof block === "object" && block !== null && "partialJson" in block) {
-			delete (block as { partialJson?: string | undefined }).partialJson;
-		}
-	}
 	message.stopReason = aborted ? "aborted" : "error";
 	message.errorMessage = buildProviderErrorMessage(error);
 	return message;
