@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers/promises";
 import { spawn } from "node:child_process";
 import { expect, test } from "bun:test";
 import { createTerminalBridgeClient, parseTerminalBridgeReadResponse } from "../src/terminal/bridge-client.ts";
@@ -40,3 +41,45 @@ test("rejects non-contiguous terminal read sequences", () => {
 		parseTerminalBridgeReadResponse({ ...base, chunks: [{ seq: 2, stream: "pty", chunk: "YQ==" }], nextSeq: 3 }, 1),
 	).toBeUndefined();
 });
+
+test.each(["stdin", "stdout", "stderr"] as const)(
+	"a failed %s pipe rejects all owned requests and permits a fresh bridge",
+	async (pipe) => {
+		const spawned = Promise.withResolvers<ReturnType<typeof spawn>>();
+		let generation = 0;
+		const bridge = createTerminalBridgeClient({
+			binaryPath: async () => process.execPath,
+			spawnBridge: () => {
+				generation++;
+				const child = spawn(
+					process.execPath,
+					[
+						"-e",
+						generation === 1
+							? "process.stdin.resume(); setInterval(() => {}, 1000)"
+							: 'process.stdin.once("data", data => { const r = JSON.parse(data); process.stdout.write(JSON.stringify({ request_id: r.request_id, ok: true, result: "replacement" }) + "\\n", () => process.exit(0)) })',
+					],
+					{ stdio: "pipe" },
+				);
+				if (generation === 1) spawned.resolve(child);
+				return child;
+			},
+		});
+		try {
+			const first = bridge.request({ op: "first" });
+			const second = bridge.request({ op: "second" });
+			const failures: string[] = [];
+			void first.catch((error: Error) => failures.push(error.message));
+			void second.catch((error: Error) => failures.push(error.message));
+			const child = await spawned.promise;
+			await setImmediate();
+			expect(() => child[pipe]!.emit("error", new Error("pipe failed"))).not.toThrow();
+			await setImmediate();
+			expect(failures).toEqual(["pipe failed", "pipe failed"]);
+			await expect(bridge.request({ op: "third" })).resolves.toBe("replacement");
+		} finally {
+			(await spawned.promise).kill("SIGKILL");
+			await bridge.shutdown();
+		}
+	},
+);

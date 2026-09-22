@@ -142,6 +142,10 @@ one build. Pass `onBuild` to show the delay in the UI. The extension host keeps
 the shared PTY host alive across an extension reload; a session switch or quit
 shuts it down.
 
+The native bridge preserves stdin write order per process. A blocked write does
+not block reads, interrupts, or termination. Each process accepts up to 16 queued
+writes behind the active write; excess requests fail without writing their input.
+
 ## Fullscreen split panes
 
 `mountSplitPane()` composes one extension-owned pane beside Pi's complete

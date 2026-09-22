@@ -124,3 +124,70 @@ test("drains process closure before reaping an explicitly terminated PTY", async
 	expect(requests.map((request) => request.op)).toEqual(["exec", "read", "terminate", "reap"]);
 	await host.shutdown();
 });
+
+test.each(["closed", "invalid", "failed"] as const)(
+	"releases native ownership after a %s read and retains rendered output",
+	async (outcome) => {
+		const reads: Array<ReturnType<typeof Promise.withResolvers<object>>> = [];
+		const requested = Promise.withResolvers<void>();
+		const released = Promise.withResolvers<string>();
+		const host = createPtyHost({
+			bridge: {
+				request<T>(request: Parameters<TerminalBridgeClient["request"]>[0]): Promise<T> {
+					if (request.op === "read") {
+						const read = Promise.withResolvers<object>();
+						reads.push(read);
+						if (reads.length === 2) requested.resolve();
+						return read.promise as Promise<T>;
+					}
+					if (request.op === "discard" || request.op === "reap") released.resolve(request.op);
+					return Promise.resolve({} as T);
+				},
+				shutdown: async () => {},
+			},
+			createProcessId: () => "process-1",
+			environment: {},
+		});
+		try {
+			const id = await host.spawn({ command: "output", cwd: "/tmp" });
+			reads[0]!.resolve({
+				chunks: [{ seq: 1, stream: "pty", chunk: Buffer.from("retained tail").toString("base64") }],
+				nextSeq: 2,
+				exited: false,
+				closed: false,
+			});
+			await requested.promise;
+			const completed = Promise.withResolvers<void>();
+			host.subscribe(id, () => {
+				if (!host.isRunning(id)) completed.resolve();
+			});
+			if (outcome === "failed") reads[1]!.reject(new Error("read failed"));
+			else reads[1]!.resolve(outcome === "invalid" ? {} : { chunks: [], nextSeq: 2, exited: true, closed: true });
+			await completed.promise;
+			expect(host.render(id, 24, false).join("\n")).toContain("retained tail");
+			// Completion must include release; do not wait indefinitely for a missing cleanup request.
+			let release: string | undefined;
+			void released.promise.then((op) => {
+				release = op;
+			});
+			await Promise.resolve();
+			expect(release).toBe(outcome === "closed" ? "reap" : "discard");
+		} finally {
+			await host.shutdown();
+		}
+	},
+);
+
+test("shutdown rejects a spawn whose native acknowledgement arrives late", async () => {
+	const executed = Promise.withResolvers<object>();
+	const host = createPtyHost({
+		bridge: { request: <T>() => executed.promise as Promise<T>, shutdown: async () => {} },
+		createProcessId: () => "late",
+		environment: {},
+	});
+	const spawning = host.spawn({ command: "interactive", cwd: "/tmp" });
+	await host.shutdown();
+	executed.resolve({});
+	await expect(spawning).rejects.toThrow("shut down");
+	expect(host.isRunning("late")).toBe(false);
+});

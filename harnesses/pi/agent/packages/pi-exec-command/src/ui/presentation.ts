@@ -6,7 +6,6 @@ import {
 	type TerminalOutputUpdate,
 	ToolActivity,
 	type ToolActivityView,
-	type ToolOutputUpdate,
 	type ToolTranscriptStatus,
 	toolCallPreview,
 } from "@luan.sh/pi-libtui/tool";
@@ -65,48 +64,18 @@ export function renderExecResult(
 	processes?: ProcessSnapshotSourceFactory,
 ) {
 	settleToolCallPreview(context.state ?? context);
+	if (!isExecDetails(result.details)) return renderFallbackResult(result, theme, context, animation);
+	const state = { expanded: options.expanded, hostError: context.isError, live: context.executionStarted };
 	if (
-		isExecDetails(result.details) &&
 		result.details.arguments.kind === "write_stdin" &&
 		!context.isError &&
 		result.details.outcome.status !== "failed"
 	) {
 		if (context.lastComponent instanceof ExecPresentation) {
-			context.lastComponent.update(
-				result.details,
-				options.expanded,
-				false,
-				context.executionStarted,
-				context.toolCallId,
-			);
+			context.lastComponent.update(result.details, state, context.toolCallId);
 			return context.lastComponent;
 		}
 		return new ComponentStack();
-	}
-	if (!isExecDetails(result.details)) {
-		const fallbackCommand = commandFromFallback(result.details, context);
-		if (!fallbackCommand) {
-			return new ToolActivity({
-				theme,
-				requestRender: context.invalidate,
-				view: {
-					action: { verb: "Command failed", status: "failed" },
-					failure: textContent(result) || "Command failed",
-				},
-			});
-		}
-		return new CommandTranscript({
-			theme,
-			requestRender: context.invalidate,
-			animation,
-			view: {
-				command: fallbackCommand,
-				shell: context.args?.shell,
-				status: "failed",
-				actions: explorationActions(fallbackCommand),
-				failure: textContent(result) || "Command failed",
-			},
-		});
 	}
 	const processSource =
 		context.executionStarted &&
@@ -116,26 +85,41 @@ export function renderExecResult(
 			? processes?.()
 			: undefined;
 	if (context.lastComponent instanceof ExecPresentation) {
-		context.lastComponent.update(
-			result.details,
-			options.expanded,
-			context.isError,
-			context.executionStarted,
-			undefined,
-			processSource,
-		);
+		context.lastComponent.update(result.details, state, undefined, processSource);
 		return context.lastComponent;
 	}
-	return new ExecPresentation(
+	return new ExecPresentation(theme, context.invalidate, result.details, state, animation, processSource);
+}
+
+function renderFallbackResult(
+	result: AgentToolResult<ExecToolPresentationDetails>,
+	theme: Theme,
+	context: RendererContext,
+	animation?: Readonly<ActivityAnimationOverrides>,
+) {
+	const fallbackCommand = commandFromFallback(result.details, context);
+	if (!fallbackCommand) {
+		return new ToolActivity({
+			theme,
+			requestRender: context.invalidate,
+			view: {
+				action: { verb: "Command failed", status: "failed" },
+				failure: textContent(result) || "Command failed",
+			},
+		});
+	}
+	return new CommandTranscript({
 		theme,
-		context.invalidate,
-		result.details,
-		options.expanded,
-		context.isError,
-		context.executionStarted,
+		requestRender: context.invalidate,
 		animation,
-		processSource,
-	);
+		view: {
+			command: fallbackCommand,
+			shell: context.args?.shell,
+			status: "failed",
+			actions: explorationActions(fallbackCommand),
+			failure: textContent(result) || "Command failed",
+		},
+	});
 }
 
 function explorationActions(command: string | undefined): readonly ShellAction[] | undefined {
@@ -192,7 +176,7 @@ function isExecDetails(details: ExecToolPresentationDetails | undefined): detail
 	);
 }
 
-// Transcript values originate outside this package despite the host's generic annotation.
+// type-boundary: restored Pi results may predate this contract; isExecDetails validates them before rendering.
 type TranscriptValue = unknown;
 
 function isRecord(value: TranscriptValue): value is Record<string, TranscriptValue> {
@@ -237,6 +221,12 @@ function commandFromFallback(
 	return undefined;
 }
 
+interface PresentationState {
+	readonly expanded: boolean;
+	readonly hostError: boolean;
+	readonly live: boolean;
+}
+
 class ExecPresentation {
 	private readonly transcript: CommandTranscript | ToolActivity;
 	/** Monotonic stream revision; output text and retention remain in pi-libtui. */
@@ -244,29 +234,18 @@ class ExecPresentation {
 	private execDetails: ExecToolPresentationDetails | undefined;
 	private readonly continuationOutput = new Map<string, string>();
 	private latestContinuation: ExecToolPresentationDetails | undefined;
-	private output: string;
 	private snapshotOutput: string | undefined;
 	private unsubscribeProcesses: (() => void) | undefined;
 	private subscribedSessionId: number | undefined;
-	private expanded: boolean;
-	private hostError: boolean;
-	private live: boolean;
 
 	constructor(
 		theme: Theme,
 		private readonly requestRender: () => void,
 		details: ExecToolPresentationDetails,
-		expanded: boolean,
-		hostError: boolean,
-		live: boolean,
+		private state: PresentationState,
 		animation?: Readonly<ActivityAnimationOverrides>,
 		processes?: ProcessSnapshotSource,
 	) {
-		this.expanded = expanded;
-		this.hostError = hostError;
-		this.live = live;
-		if (details.outcome.status !== "running") this.stopProcessUpdates();
-		this.output = details.progress.output;
 		if (details.arguments.kind === "exec_command") this.execDetails = details;
 		const revision = this.nextOutputRevision();
 		this.transcript =
@@ -275,12 +254,12 @@ class ExecPresentation {
 						theme,
 						requestRender,
 						animation,
-						view: commandView(details, expanded, hostError, live, revision),
+						view: commandView(details, state, revision),
 					})
 				: new ToolActivity({
 						theme,
 						requestRender,
-						view: terminalContinuationView(details, expanded, hostError, live, revision),
+						view: terminalContinuationView(details, state, revision),
 						textSelection: "tail",
 					});
 		this.syncProcess(details, processes);
@@ -288,40 +267,35 @@ class ExecPresentation {
 
 	update(
 		details: ExecToolPresentationDetails,
-		expanded: boolean,
-		hostError: boolean,
-		live: boolean,
+		state: PresentationState,
 		continuationId?: string,
 		processes?: ProcessSnapshotSource,
 	): void {
-		this.expanded = expanded;
-		this.hostError = hostError;
-		this.live = live;
+		this.state = state;
 		if (details.outcome.status !== "running") this.stopProcessUpdates();
 		if (details.arguments.kind === "exec_command") {
 			this.execDetails = details;
-			this.output = this.mergedOutput();
 			this.syncProcess(details, processes);
-			if (this.latestContinuation && this.transcript instanceof CommandTranscript) {
-				const continuation = continuationDetails(details, this.latestContinuation, this.output);
-				this.transcript.update(commandView(continuation, expanded, hostError, live, this.nextOutputRevision()));
-				return;
-			}
-		}
-		if (details.arguments.kind === "write_stdin" && this.execDetails && this.transcript instanceof CommandTranscript) {
+		} else if (this.execDetails && this.transcript instanceof CommandTranscript) {
 			const key = continuationId ?? details.identifiers.chunkId ?? "continuation";
 			this.continuationOutput.set(key, details.progress.output);
 			this.latestContinuation = details;
-			this.output = this.mergedOutput();
-			const continuation = continuationDetails(this.execDetails, details, this.output);
-			this.transcript.update(commandView(continuation, expanded, hostError, live, this.nextOutputRevision()));
-			return;
 		}
+		const base = details.arguments.kind === "exec_command" ? details : this.execDetails;
+		const continuation = this.latestContinuation;
+		const viewDetails =
+			base && continuation && this.transcript instanceof CommandTranscript
+				? continuationDetails(base, continuation, this.mergedOutput())
+				: details;
+		this.updateTranscript(viewDetails);
+	}
+
+	private updateTranscript(details: ExecToolPresentationDetails): void {
 		const revision = this.nextOutputRevision();
 		if (this.transcript instanceof CommandTranscript) {
-			this.transcript.update(commandView(details, expanded, hostError, live, revision));
+			this.transcript.update(commandView(details, this.state, revision));
 		} else {
-			this.transcript.update(terminalContinuationView(details, expanded, hostError, live, revision));
+			this.transcript.update(terminalContinuationView(details, this.state, revision));
 		}
 	}
 
@@ -334,7 +308,7 @@ class ExecPresentation {
 
 	private syncProcess(details: ExecToolPresentationDetails, processes: ProcessSnapshotSource | undefined): void {
 		const sessionId = details.identifiers.sessionId;
-		if (!this.live || sessionId === null || !processes?.subscribeProcesses) return;
+		if (!this.state.live || sessionId === null || !processes?.subscribeProcesses) return;
 		if (this.subscribedSessionId === sessionId) return;
 		this.unsubscribeProcesses?.();
 		this.unsubscribeProcesses = undefined;
@@ -356,11 +330,8 @@ class ExecPresentation {
 	private acceptProcessSnapshot(snapshot: ExecProcessSnapshot): void {
 		if (!this.execDetails || !(this.transcript instanceof CommandTranscript)) return;
 		this.snapshotOutput = snapshot.output;
-		this.execDetails = snapshotDetails(this.execDetails, snapshot);
-		this.output = this.mergedOutput();
-		this.transcript.update(
-			commandView(this.execDetails, this.expanded, this.hostError, this.live, this.nextOutputRevision()),
-		);
+		this.execDetails = snapshotDetails(this.execDetails, snapshot, Date.now());
+		this.updateTranscript(this.execDetails);
 		if (snapshot.state === "exited") this.stopProcessUpdates();
 	}
 
@@ -404,6 +375,7 @@ class ExecPresentation {
 function snapshotDetails(
 	base: ExecToolPresentationDetails,
 	snapshot: ExecProcessSnapshot,
+	nowMs: number,
 ): ExecToolPresentationDetails {
 	const exited = snapshot.state === "exited";
 	const exitCode = exited ? (snapshot.exitCode ?? 1) : null;
@@ -411,7 +383,7 @@ function snapshotDetails(
 		...base,
 		phase: exited ? "final" : "partial",
 		timing: {
-			wallTimeSeconds: Math.max(0, (snapshot.finishedAtMs ?? Date.now()) - snapshot.startedAtMs) / 1_000,
+			wallTimeSeconds: Math.max(0, (snapshot.finishedAtMs ?? nowMs) - snapshot.startedAtMs) / 1_000,
 		},
 		progress: {
 			...base.progress,
@@ -449,9 +421,7 @@ function continuationDetails(
 
 function commandView(
 	details: ExecToolPresentationDetails,
-	expanded: boolean,
-	hostError: boolean,
-	live: boolean,
+	{ expanded, hostError, live }: PresentationState,
 	outputRevision: number,
 ): CommandTranscriptView {
 	const status = toolStatus(details, hostError);
@@ -477,9 +447,7 @@ function commandView(
 
 function terminalContinuationView(
 	details: ExecToolPresentationDetails,
-	expanded: boolean,
-	hostError: boolean,
-	live: boolean,
+	{ expanded, hostError, live }: PresentationState,
 	outputRevision: number,
 ): ToolActivityView {
 	const status = toolStatus(details, hostError);
@@ -529,16 +497,9 @@ function terminalContinuationView(
 }
 
 function outputUpdate(details: ExecToolPresentationDetails): TerminalOutputUpdate {
-	return details.arguments.tty === false ? plainOutputUpdate(details) : terminalOutputUpdate(details);
-}
-
-function plainOutputUpdate(details: ExecToolPresentationDetails): ToolOutputUpdate {
-	return details.phase === "partial" && !details.progress.outputTruncated ? "cumulative" : "replace";
-}
-
-function terminalOutputUpdate(details: ExecToolPresentationDetails): TerminalOutputUpdate {
 	if (details.phase !== "partial") return "replace";
-	return details.progress.outputTruncated ? "cumulative-tail" : "cumulative";
+	if (!details.progress.outputTruncated) return "cumulative";
+	return details.arguments.tty === false ? "replace" : "cumulative-tail";
 }
 
 function toolStatus(details: ExecToolPresentationDetails, hostError: boolean): ToolTranscriptStatus {

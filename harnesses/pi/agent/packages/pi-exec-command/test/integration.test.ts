@@ -101,13 +101,18 @@ test("the release bridge accepts TTY input", async () => {
 			process.cwd(),
 		);
 		expect(running.session_id).toBeNumber();
-		const completed = await sessions.write({
+		let completed = await sessions.write({
 			session_id: running.session_id!,
 			chars: "hello\n",
 			yield_time_ms: 5_000,
 		});
+		let output = running.output + completed.output;
+		while (completed.session_id !== undefined) {
+			completed = await sessions.write({ session_id: completed.session_id, yield_time_ms: 5_000 });
+			output += completed.output;
+		}
 		expect(completed.exit_code).toBe(0);
-		expect(completed.output).toContain("got:hello");
+		expect(output).toContain("got:hello");
 	} finally {
 		await sessions.shutdown();
 	}
