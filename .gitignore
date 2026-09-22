@@ -15,4 +15,5 @@ target/
 /.skill-lock.json
 
 # Generated evaluation artifacts
+/.supercov/
 /artifacts/

@@ -312,29 +312,58 @@ fn create_file_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_file(source, target)
 }
 
-fn manage_link(operation: Operation, source: &Path, target: &Path, safe_root: &Path) -> Result<()> {
+#[derive(Clone, Copy)]
+enum LinkKind {
+    ManagedFile,
+    RuntimeDependency,
+}
+
+fn manage_link(
+    operation: Operation,
+    kind: LinkKind,
+    source: &Path,
+    target: &Path,
+    safe_root: &Path,
+) -> Result<()> {
     ensure_safe_target_parent(operation, target, safe_root)?;
-    if !matches!(operation, Operation::Unlink) && path_status(source)?.is_none() {
-        bail!("missing managed source: {}", source.display());
+    let (label, source_label, conflict) = match kind {
+        LinkKind::ManagedFile => ("managed link", "managed source", "refusing to replace"),
+        LinkKind::RuntimeDependency => (
+            "runtime dependency link",
+            "installed runtime dependency",
+            "refusing to replace runtime dependency:",
+        ),
+    };
+    if !matches!(operation, Operation::Unlink) {
+        let exists = match kind {
+            LinkKind::ManagedFile => path_status(source)?.is_some(),
+            LinkKind::RuntimeDependency => source
+                .try_exists()
+                .with_context(|| format!("inspect runtime dependency {}", source.display()))?,
+        };
+        if !exists {
+            bail!("missing {source_label}: {}", source.display());
+        }
     }
 
+    let owned = exact_link(source, target)?;
     match operation {
         Operation::Check => {
-            if !exact_link(source, target)? {
-                bail!("invalid managed link: {}", target.display());
+            if !owned {
+                bail!("invalid {label}: {}", target.display());
             }
         }
         Operation::Unlink => {
-            if exact_link(source, target)? {
+            if owned {
                 fs::remove_file(target)
-                    .with_context(|| format!("remove link {}", target.display()))?;
+                    .with_context(|| format!("remove {label} {}", target.display()))?;
             }
         }
         Operation::Setup => {
+            if owned {
+                return Ok(());
+            }
             if let Some(file_type) = path_status(target)? {
-                if exact_link(source, target)? {
-                    return Ok(());
-                }
                 let suffix = if file_type.is_symlink() {
                     format!(
                         " -> {}",
@@ -345,10 +374,19 @@ fn manage_link(operation: Operation, source: &Path, target: &Path, safe_root: &P
                 } else {
                     String::new()
                 };
-                bail!("refusing to replace {}{suffix}", target.display());
+                bail!("{conflict} {}{suffix}", target.display());
             }
-            create_file_symlink(source, target)
-                .with_context(|| format!("link {} -> {}", target.display(), source.display()))?;
+            match kind {
+                LinkKind::ManagedFile => create_file_symlink(source, target),
+                LinkKind::RuntimeDependency => create_directory_symlink(source, target),
+            }
+            .with_context(|| {
+                format!(
+                    "create {label} {} -> {}",
+                    target.display(),
+                    source.display()
+                )
+            })?;
         }
     }
     Ok(())
@@ -431,13 +469,13 @@ fn tree_files(
     Ok(())
 }
 
-fn reconcile_tree_visit(
+fn reconcile_owned_links(
     operation: Operation,
     source_root: &Path,
     target_root: &Path,
     relative: &Path,
-    expected: &BTreeSet<&PathBuf>,
-    exclude_package_development: bool,
+    // None retires all owned links in a removed package, including node_modules.
+    expected: Option<&BTreeSet<&PathBuf>>,
 ) -> Result<()> {
     let mut entries = fs::read_dir(target_root.join(relative))
         .with_context(|| format!("read managed tree {}", target_root.display()))?
@@ -445,7 +483,7 @@ fn reconcile_tree_visit(
         .with_context(|| format!("read entries in {}", target_root.join(relative).display()))?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
-        if entry.file_name() == "node_modules" {
+        if expected.is_some() && entry.file_name() == "node_modules" {
             continue;
         }
         let child = relative.join(entry.file_name());
@@ -453,20 +491,11 @@ fn reconcile_tree_visit(
             .file_type()
             .with_context(|| format!("inspect {}", entry.path().display()))?;
         if file_type.is_dir() {
-            let child_exclude = !(exclude_package_development
-                && is_package_development_surface(source_root, relative, &entry.file_name()));
-            reconcile_tree_visit(
-                operation,
-                source_root,
-                target_root,
-                &child,
-                expected,
-                child_exclude,
-            )?;
+            reconcile_owned_links(operation, source_root, target_root, &child, expected)?;
             continue;
         }
         if file_type.is_symlink()
-            && !expected.contains(&child)
+            && !expected.is_some_and(|files| files.contains(&child))
             && exact_link(&source_root.join(&child), &entry.path())?
         {
             match operation {
@@ -490,7 +519,6 @@ fn reconcile_tree(
     target_root: &Path,
     expected: &[PathBuf],
     safe_root: &Path,
-    exclude_package_development: bool,
 ) -> Result<()> {
     validate_managed_directory(target_root, safe_root)?;
     let Some(file_type) = path_status(target_root)? else {
@@ -502,13 +530,12 @@ fn reconcile_tree(
 
     let expected = expected.iter().collect::<BTreeSet<_>>();
     // Only exact repository-owned symlinks are reconciled. Real files remain protected.
-    reconcile_tree_visit(
+    reconcile_owned_links(
         operation,
         source_root,
         target_root,
         Path::new(""),
-        &expected,
-        exclude_package_development,
+        Some(&expected),
     )
 }
 
@@ -547,39 +574,8 @@ fn reconcile_stale_packages(
             &source_root.join(&package_name),
             &entry.path(),
             Path::new(""),
+            None,
         )?;
-    }
-    Ok(())
-}
-
-fn reconcile_owned_links(
-    operation: Operation,
-    source_root: &Path,
-    target_root: &Path,
-    relative: &Path,
-) -> Result<()> {
-    let mut entries = fs::read_dir(target_root.join(relative))
-        .with_context(|| format!("read managed package {}", target_root.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("read entries in {}", target_root.join(relative).display()))?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
-        let child = relative.join(entry.file_name());
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("inspect {}", entry.path().display()))?;
-        if file_type.is_dir() {
-            reconcile_owned_links(operation, source_root, target_root, &child)?;
-            continue;
-        }
-        if !file_type.is_symlink() || !exact_link(&source_root.join(&child), &entry.path())? {
-            continue;
-        }
-        match operation {
-            Operation::Check => bail!("stale managed link: {}", entry.path().display()),
-            Operation::Setup | Operation::Unlink => fs::remove_file(entry.path())
-                .with_context(|| format!("remove stale managed link {}", entry.path().display()))?,
-        }
     }
     Ok(())
 }
@@ -612,65 +608,6 @@ fn dependency_path(name: &str) -> Result<PathBuf> {
         bail!("invalid package dependency name: {name}");
     }
     Ok(segments.iter().collect())
-}
-
-fn manage_dependency_link(
-    operation: Operation,
-    source: &Path,
-    target: &Path,
-    safe_root: &Path,
-) -> Result<()> {
-    ensure_safe_target_parent(operation, target, safe_root)?;
-    if !matches!(operation, Operation::Unlink)
-        && !source
-            .try_exists()
-            .with_context(|| format!("inspect runtime dependency {}", source.display()))?
-    {
-        bail!("missing installed runtime dependency: {}", source.display());
-    }
-
-    match operation {
-        Operation::Check => {
-            if !exact_link(source, target)? {
-                bail!("invalid runtime dependency link: {}", target.display());
-            }
-        }
-        Operation::Unlink => {
-            if exact_link(source, target)? {
-                fs::remove_file(target)
-                    .with_context(|| format!("remove dependency link {}", target.display()))?;
-            }
-        }
-        Operation::Setup => {
-            if exact_link(source, target)? {
-                return Ok(());
-            }
-            if let Some(file_type) = path_status(target)? {
-                let suffix = if file_type.is_symlink() {
-                    format!(
-                        " -> {}",
-                        fs::read_link(target)
-                            .with_context(|| format!("read link {}", target.display()))?
-                            .display()
-                    )
-                } else {
-                    String::new()
-                };
-                bail!(
-                    "refusing to replace runtime dependency: {}{suffix}",
-                    target.display()
-                );
-            }
-            create_directory_symlink(source, target).with_context(|| {
-                format!(
-                    "link runtime dependency {} -> {}",
-                    target.display(),
-                    source.display()
-                )
-            })?;
-        }
-    }
-    Ok(())
 }
 
 fn reconcile_dependency_links(
@@ -885,8 +822,9 @@ fn manage_package_tree(
             safe_root,
         )?;
         for (dependency, source) in dependencies {
-            manage_dependency_link(
+            manage_link(
                 operation,
+                LinkKind::RuntimeDependency,
                 &source,
                 &target_dependencies.join(dependency),
                 safe_root,
@@ -911,6 +849,7 @@ pub fn run(operation: Operation, repository: &Path, home: &Path) -> Result<()> {
         for path in harness.links {
             manage_link(
                 operation,
+                LinkKind::ManagedFile,
                 &source_root.join(&path),
                 &target_root.join(path),
                 home,
@@ -943,11 +882,11 @@ pub fn run(operation: Operation, repository: &Path, home: &Path) -> Result<()> {
                 &target_root.join(&tree),
                 &files,
                 home,
-                exclude_package_development,
             )?;
             for path in files {
                 manage_link(
                     operation,
+                    LinkKind::ManagedFile,
                     &tree_root.join(&path),
                     &target_root.join(&tree).join(path),
                     home,

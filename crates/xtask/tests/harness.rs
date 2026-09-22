@@ -561,13 +561,19 @@ fn stale_local_dependency_cleanup_handles_symlinked_repository_path(
 #[rstest]
 #[case::real_file("file")]
 #[case::wrong_symlink("symlink")]
-fn setup_refuses_occupied_dependency_target(
+fn managed_links_preserve_occupied_targets(
     fixture: HarnessFixture,
     #[case] occupied_by: &str,
+    #[values(false, true)] runtime_dependency: bool,
 ) -> Result<()> {
     fixture.write_managed(&[], &["packages"]);
-    let (_package, _dependency) = fixture.package("pi-example", "runtime-dependency");
-    let target = fixture.target_dependency("pi-example", "runtime-dependency");
+    let (package, _dependency) = fixture.package("pi-example", "runtime-dependency");
+    fs::write(package.join("src.ts"), "source")?;
+    let target = if runtime_dependency {
+        fixture.target_dependency("pi-example", "runtime-dependency")
+    } else {
+        fixture.home.join("target/packages/pi-example/src.ts")
+    };
     fs::create_dir_all(target.parent().expect("dependency target parent"))?;
     let suffix = if occupied_by == "file" {
         fs::write(&target, "user data")?;
@@ -581,15 +587,18 @@ fn setup_refuses_occupied_dependency_target(
 
     let error = run(Operation::Setup, &fixture.repository, &fixture.home)
         .expect_err("occupied target must be protected");
+    let prefix = if runtime_dependency {
+        "refusing to replace runtime dependency:"
+    } else {
+        "refusing to replace"
+    };
     assert_eq!(
         error.to_string(),
-        format!(
-            "refusing to replace runtime dependency: {}{suffix}",
-            target.display()
-        )
+        format!("{prefix} {}{suffix}", target.display())
     );
+    run(Operation::Unlink, &fixture.repository, &fixture.home)?;
     if occupied_by == "file" {
-        ChildPath::new(&target).assert(predicate::path::is_file());
+        assert_eq!(fs::read_to_string(&target)?, "user data");
     } else {
         assert_eq!(
             fs::read_link(&target)?,
@@ -600,7 +609,12 @@ fn setup_refuses_occupied_dependency_target(
 }
 
 #[rstest]
-fn stale_package_cleanup_removes_only_exact_links(fixture: HarnessFixture) -> Result<()> {
+#[case(Operation::Setup)]
+#[case(Operation::Unlink)]
+fn stale_package_cleanup_removes_only_exact_links(
+    fixture: HarnessFixture,
+    #[case] operation: Operation,
+) -> Result<()> {
     fixture.write_managed(&[], &["packages"]);
     let source_package = fixture.repository.join("source/packages/pi-removed");
     fs::create_dir_all(source_package.parent().expect("package source parent"))?;
@@ -611,6 +625,12 @@ fn stale_package_cleanup_removes_only_exact_links(fixture: HarnessFixture) -> Re
     let source_file = source_package.join("old.ts");
     create_file_symlink(&source_manifest, &target_package.join("package.json"))?;
     create_file_symlink(&source_file, &target_package.join("old.ts"))?;
+    let dependency = target_package.join("node_modules/@scope/removed");
+    fs::create_dir_all(dependency.parent().expect("dependency parent"))?;
+    create_directory_symlink(
+        &source_package.join("node_modules/@scope/removed"),
+        &dependency,
+    )?;
     fs::write(target_package.join("keep.txt"), "user data")?;
     let unrelated = fixture.home.join("unrelated.ts");
     fs::write(&unrelated, "unrelated")?;
@@ -620,10 +640,18 @@ fn stale_package_cleanup_removes_only_exact_links(fixture: HarnessFixture) -> Re
         .expect_err("stale managed link must be reported");
     assert!(error.to_string().starts_with("stale managed link: "));
 
-    run(Operation::Unlink, &fixture.repository, &fixture.home)?;
+    run(operation, &fixture.repository, &fixture.home)?;
     ChildPath::new(target_package.join("keep.txt")).assert(predicate::path::is_file());
-    assert_eq!(target_package.join("package.json").try_exists()?, false);
-    assert_eq!(target_package.join("old.ts").try_exists()?, false);
+    for removed in [
+        target_package.join("package.json"),
+        target_package.join("old.ts"),
+        dependency,
+    ] {
+        assert_eq!(
+            fs::symlink_metadata(removed).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
     assert_eq!(fs::read_link(target_package.join("wrong.ts"))?, unrelated);
     Ok(())
 }

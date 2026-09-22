@@ -365,40 +365,20 @@ async fn apply_hunks_to_files(
                 if deleted_content.is_none() {
                     delta.exact = false;
                 }
-                ensure_not_directory(&path_uri, fs, sandbox)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "Failed to delete file {}",
-                            path_uri.inferred_native_path_string()
-                        )
-                    })?;
-                if let Err(error) = fs
-                    .remove(
-                        &path_uri,
-                        RemoveOptions {
-                            recursive: false,
-                            force: false,
-                        },
-                        sandbox,
+                remove_file_for_delta(
+                    &path_uri,
+                    deleted_content.as_deref(),
+                    fs,
+                    sandbox,
+                    &mut delta.exact,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to delete file {}",
+                        path_uri.inferred_native_path_string()
                     )
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "Failed to delete file {}",
-                            path_uri.inferred_native_path_string()
-                        )
-                    })
-                {
-                    delta.exact &= remove_failure_was_side_effect_free(
-                        &path_uri,
-                        deleted_content.as_deref(),
-                        fs,
-                        sandbox,
-                    )
-                    .await;
-                    return Err(error);
-                }
+                })?;
                 if let Some(content) = deleted_content {
                     delta.changes.push(AppliedPatchChange {
                         path: path_uri,
@@ -415,8 +395,12 @@ async fn apply_hunks_to_files(
                     original_contents,
                     new_contents,
                 } = derive_new_contents_from_chunks(&path_uri, chunks, fs, sandbox).await?;
-                if let Some(dest) = move_path {
-                    let dest_uri = cwd.join(&dest.to_string_lossy())?;
+                let destination = move_path
+                    .as_ref()
+                    .map(|dest| cwd.join(&dest.to_string_lossy()))
+                    .transpose()?;
+                // A move to the same resolved path is an in-place update.
+                if let Some(dest_uri) = destination.filter(|dest| dest != &path_uri) {
                     let overwritten_move_content =
                         read_optional_file_text_for_delta(&dest_uri, fs, sandbox, &mut delta.exact)
                             .await;
@@ -437,40 +421,20 @@ async fn apply_hunks_to_files(
                             overwritten_content: overwritten_move_content.clone(),
                         },
                     });
-                    ensure_not_directory(&path_uri, fs, sandbox)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "Failed to remove original {}",
-                                path_uri.inferred_native_path_string()
-                            )
-                        })?;
-                    if let Err(error) = fs
-                        .remove(
-                            &path_uri,
-                            RemoveOptions {
-                                recursive: false,
-                                force: false,
-                            },
-                            sandbox,
+                    remove_file_for_delta(
+                        &path_uri,
+                        Some(&original_contents),
+                        fs,
+                        sandbox,
+                        &mut delta.exact,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to remove original {}",
+                            path_uri.inferred_native_path_string()
                         )
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "Failed to remove original {}",
-                                path_uri.inferred_native_path_string()
-                            )
-                        })
-                    {
-                        delta.exact &= remove_failure_was_side_effect_free(
-                            &path_uri,
-                            Some(&original_contents),
-                            fs,
-                            sandbox,
-                        )
-                        .await;
-                        return Err(error);
-                    }
+                    })?;
                     delta.changes[dest_write_change_index] = AppliedPatchChange {
                         path: path_uri,
                         change: AppliedPatchFileChange::Update {
@@ -511,34 +475,39 @@ async fn apply_hunks_to_files(
     })
 }
 
-async fn ensure_not_directory(
+async fn remove_file_for_delta(
     path: &PathUri,
+    expected_content: Option<&str>,
     fs: &dyn ExecutorFileSystem,
     sandbox: Option<&FileSystemSandboxContext>,
+    exact: &mut bool,
 ) -> io::Result<()> {
-    let metadata = fs.get_metadata(path, sandbox).await?;
-    if metadata.is_directory {
+    if fs.get_metadata(path, sandbox).await?.is_directory {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "path is a directory",
         ));
     }
-    Ok(())
-}
-
-async fn remove_failure_was_side_effect_free(
-    path: &PathUri,
-    expected_content: Option<&str>,
-    fs: &dyn ExecutorFileSystem,
-    sandbox: Option<&FileSystemSandboxContext>,
-) -> bool {
-    match expected_content {
-        Some(expected_content) => fs
-            .read_file_text(path, sandbox)
-            .await
-            .is_ok_and(|content| content == expected_content),
-        None => false,
+    let result = fs
+        .remove(
+            path,
+            RemoveOptions {
+                recursive: false,
+                force: false,
+            },
+            sandbox,
+        )
+        .await;
+    if result.is_err() {
+        *exact &= match expected_content {
+            Some(expected) => fs
+                .read_file_text(path, sandbox)
+                .await
+                .is_ok_and(|content| content == expected),
+            None => false,
+        };
     }
+    result
 }
 
 async fn read_optional_file_text_for_delta(

@@ -226,6 +226,49 @@ async fn test_update_file_hunk_can_move_file() {
     assert_eq!(contents, "line2\n");
 }
 
+#[rstest::rstest]
+#[case("src.txt")]
+#[case("./src.txt")]
+#[case("unused/../src.txt")]
+#[tokio::test]
+async fn test_move_to_source_updates_in_place(#[case] destination: &str) {
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("src.txt");
+    let source_uri = PathUri::from_host_native_path(&src).unwrap();
+    fs::write(&src, "before\n").unwrap();
+    let patch = wrap_patch(&format!(
+        "*** Update File: {}\n*** Move to: {destination}\n@@\n-before\n+after",
+        src.display(),
+    ));
+    let delta = apply_patch(
+        &patch,
+        &PathUri::from_host_native_path(dir.path()).unwrap(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        LOCAL_FS.as_ref(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(fs::read_to_string(src).unwrap(), "after\n");
+    assert_eq!(
+        delta,
+        AppliedPatchDelta::new(
+            vec![AppliedPatchChange {
+                path: source_uri,
+                change: AppliedPatchFileChange::Update {
+                    move_path: None,
+                    old_content: "before\n".into(),
+                    overwritten_move_content: None,
+                    new_content: "after\n".into(),
+                },
+            }],
+            true,
+        ),
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn test_failed_move_returns_committed_destination_delta() {
