@@ -90,7 +90,7 @@ pi-install-check package:
     tar -xzf "$archive" -C "$check_root/unpacked"; \
     packaged="$check_root/unpacked/package"; \
     mkdir -p "$check_root/external"; \
-    bun -e 'import { resolve } from "node:path"; const packaged=process.argv[1]; const destination=process.argv[2]; const manifest=await Bun.file(resolve(packaged,"package.json")).json(); const dependencies=Object.fromEntries(Object.entries(manifest.dependencies ?? {}).filter(([,specification])=>typeof specification === "string" && !specification.startsWith("file:") && !specification.startsWith("workspace:"))); await Bun.write(resolve(destination,"package.json"),`${JSON.stringify({private:true,dependencies},null,2)}\n`);' "$packaged" "$check_root/external"; \
+    bun -e 'import { resolve } from "node:path"; const packaged=process.argv[1]; const destination=process.argv[2]; const manifest=await Bun.file(resolve(packaged,"package.json")).json(); const dependencies=Object.fromEntries(Object.entries({ ...manifest.peerDependencies, ...manifest.dependencies }).filter(([,specification])=>typeof specification === "string" && !specification.startsWith("file:") && !specification.startsWith("workspace:"))); await Bun.write(resolve(destination,"package.json"),`${JSON.stringify({private:true,dependencies},null,2)}\n`);' "$packaged" "$check_root/external"; \
     cd "$check_root/external"; \
     npm install --ignore-scripts --package-lock=false --omit=dev --no-audit --no-fund; \
     if test -d node_modules; then mkdir -p "$packaged/node_modules"; cp -R node_modules/. "$packaged/node_modules/"; fi; \

@@ -49,6 +49,11 @@ the measurement fails).
 
 ## Components
 
+`ComponentStack` composes child components vertically by default. Pass
+`{ direction: "horizontal", gap }` for equal-width columns; spans expose both
+`row` and `col`, and pointer events are translated to the selected child. Use
+`maxHeight` (or `height`) to bound either layout.
+
 Captures of the shared components inside the extensions that use them. The
 images are served from the documentation site.
 

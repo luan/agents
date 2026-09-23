@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Component } from "@earendil-works/pi-tui";
+import { visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { ComponentStack } from "../src/component-stack.ts";
 import type { TuiMouseEvent } from "../src/mouse.ts";
 
@@ -72,9 +72,28 @@ describe("ComponentStack", () => {
 
 		expect(stack.render(20)).toEqual(["one", "two", "three"]);
 		expect(stack.getSpans()).toEqual([
-			{ component: first, index: 0, row: 0, height: 2, width: 20 },
-			{ component: second, index: 1, row: 2, height: 1, width: 20 },
+			{ component: first, index: 0, row: 0, col: 0, height: 2, width: 20 },
+			{ component: second, index: 1, row: 2, col: 0, height: 1, width: 20 },
 		]);
+	});
+
+	test("renders equal horizontal columns and translates pointer columns", () => {
+		const first = new MouseComponent(["one", "two"]);
+		const second = new MouseComponent(["three"]);
+		const stack = new ComponentStack([first, second], { direction: "horizontal", gap: 2, height: 2 });
+
+		const rendered = stack.render(10);
+		expect(rendered[0]).toContain("one");
+		expect(rendered[0]).toContain("thr");
+		expect(rendered.every((line) => visibleWidth(line) <= 10)).toBe(true);
+		expect(stack.render(1).every((line) => visibleWidth(line) <= 1)).toBe(true);
+		stack.render(10);
+		expect(stack.getSpans()).toEqual([
+			{ component: first, index: 0, row: 0, col: 0, height: 2, width: 4 },
+			{ component: second, index: 1, row: 0, col: 6, height: 2, width: 4 },
+		]);
+		expect(stack.onMouse(mouseEvent(0, 7))).toBe(true);
+		expect(second.events[0]).toMatchObject({ row: 0, col: 1 });
 	});
 
 	test("routes input to the active child and keeps its identity across replacement", () => {

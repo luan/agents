@@ -1,11 +1,17 @@
 import { type Component, type Focusable, isFocusable } from "@earendil-works/pi-tui";
 import type { TuiMouseEvent } from "./mouse.ts";
+import { fitLine } from "./line-layout.ts";
 
 /** Input-routing policy for a {@link ComponentStack}. */
 export type ComponentStackInputMode = "active" | "all";
+export type ComponentStackDirection = "vertical" | "horizontal";
 
 /** Construction options for a vertical component stack. */
 export interface ComponentStackOptions {
+	/** Arrange children in rows (default) or equal-width columns. */
+	direction?: ComponentStackDirection;
+	/** Cells between horizontal children. */
+	gap?: number;
 	/** Send input to one selected child, or to every child in display order. */
 	inputMode?: ComponentStackInputMode;
 	/** Zero-based initial active child; invalid values select the first child. */
@@ -26,6 +32,8 @@ export interface ComponentStackSpan {
 	readonly index: number;
 	/** Zero-based first row of the child within the stack. */
 	readonly row: number;
+	/** Zero-based first column of the child within the stack. */
+	readonly col: number;
 	/** Number of visible rows retained after clipping. */
 	readonly height: number;
 	/** Width in columns supplied to the child during rendering. */
@@ -133,6 +141,7 @@ export class ComponentStack implements Component, Focusable {
 
 	render(width: number): string[] {
 		this.renderedWidth = Math.max(0, Math.floor(width));
+		if (this.options.direction === "horizontal") return this.renderHorizontal();
 		const configuredHeight = typeof this.options.height === "function" ? this.options.height() : this.options.height;
 		const configuredMaxHeight =
 			typeof this.options.maxHeight === "function" ? this.options.maxHeight() : this.options.maxHeight;
@@ -171,6 +180,7 @@ export class ComponentStack implements Component, Focusable {
 					component: this.stackChildren[index]!,
 					index,
 					row,
+					col: 0,
 					height: visibleLines.length,
 					width: this.renderedWidth,
 				});
@@ -188,6 +198,68 @@ export class ComponentStack implements Component, Focusable {
 		this.spans = spans;
 		this.renderedHeight = lines.length;
 		return lines;
+	}
+
+	private renderHorizontal(): string[] {
+		const count = this.stackChildren.length;
+		if (count === 0) {
+			this.spans = [];
+			this.renderedHeight = 0;
+			return [];
+		}
+		const gap = Math.min(
+			Math.max(0, Math.floor(this.options.gap ?? 0)),
+			Math.floor(this.renderedWidth / Math.max(1, count - 1)),
+		);
+		const usable = Math.max(0, this.renderedWidth - gap * Math.max(0, count - 1));
+		const base = Math.floor(usable / count);
+		const remainder = usable % count;
+		const rendered = this.stackChildren.map((child, index) => {
+			const childWidth = base + (index < remainder ? 1 : 0);
+			return { child, width: childWidth, lines: childWidth > 0 ? child.render(childWidth) : [] };
+		});
+		const requested = typeof this.options.height === "function" ? this.options.height() : this.options.height;
+		const maximum = typeof this.options.maxHeight === "function" ? this.options.maxHeight() : this.options.maxHeight;
+		const limit = requested ?? maximum;
+		const naturalHeight = Math.max(...rendered.map(({ lines }) => lines.length), 0);
+		const height = Math.max(
+			0,
+			Math.floor(
+				limit === undefined
+					? naturalHeight
+					: this.options.height !== undefined
+						? limit
+						: Math.min(naturalHeight, limit),
+			),
+		);
+		const spans: ComponentStackSpan[] = [];
+		const columns: string[][] = [];
+		let col = 0;
+		for (const [index, entry] of rendered.entries()) {
+			const lines = entry.lines.slice(0, height);
+			while (lines.length < height) lines.push("");
+			columns.push(lines);
+			if (height > 0 && entry.width > 0)
+				spans.push({ component: entry.child, index, row: 0, col, height, width: entry.width });
+			col += entry.width + gap;
+		}
+		const output = Array.from({ length: height }, (_, row) =>
+			columns
+				.map((lines, index) => {
+					const line = fitLine(lines[row] ?? "", rendered[index]!.width);
+					return `${line}${index < columns.length - 1 ? " ".repeat(gap) : ""}`;
+				})
+				.join(""),
+		);
+		const remap = (previous: ComponentStackSpan | undefined): ComponentStackSpan | undefined =>
+			previous
+				? spans.find((span) => span.component === previous.component && span.index === previous.index)
+				: undefined;
+		this.hoveredSpan = remap(this.hoveredSpan);
+		this.capturedSpan = remap(this.capturedSpan);
+		this.spans = spans;
+		this.renderedHeight = output.length;
+		return output;
 	}
 
 	/** Dispatch a normalized pointer event to the child span under its coordinates. */
@@ -208,7 +280,13 @@ export class ComponentStack implements Component, Focusable {
 		const inside =
 			event.col >= 0 && event.col < this.renderedWidth && event.row >= 0 && event.row < this.renderedHeight;
 		const span = inside
-			? this.spans.find((candidate) => event.row >= candidate.row && event.row < candidate.row + candidate.height)
+			? this.spans.find(
+					(candidate) =>
+						event.row >= candidate.row &&
+						event.row < candidate.row + candidate.height &&
+						event.col >= candidate.col &&
+						event.col < candidate.col + candidate.width,
+				)
 			: undefined;
 		const hoverHandled = this.updateHover(span, event);
 		if (!span) return hoverHandled;
@@ -232,7 +310,7 @@ export class ComponentStack implements Component, Focusable {
 	private dispatch(span: ComponentStackSpan, event: TuiMouseEvent): boolean {
 		const handler = (span.component as MouseComponent).onMouse;
 		if (!handler) return false;
-		return handler.call(span.component, { ...event, row: event.row - span.row });
+		return handler.call(span.component, { ...event, row: event.row - span.row, col: event.col - span.col });
 	}
 
 	private clampActiveChild(): void {
