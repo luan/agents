@@ -279,3 +279,16 @@ test("serializes Code Mode audio as a Responses tool output", () => {
 		output: [{ type: "input_audio", audio_url: "data:audio/wav;base64,YQ==" }],
 	});
 });
+
+test("ordinary Codex function tools keep optional arguments optional", () => {
+	const parameters = {
+		type: "object",
+		properties: { action: { type: "string" }, name: { type: "string" } },
+		required: ["action"],
+	};
+	const body = buildRequestBody(model, {
+		messages: [],
+		tools: [{ name: "notebook__control", description: "Control notebook", parameters }],
+	});
+	expect(body.tools?.[0]).toMatchObject({ type: "function", strict: false, parameters });
+});

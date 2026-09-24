@@ -1,5 +1,5 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { clampThinkingLevel, getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
+import { type Api, clampThinkingLevel, getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -18,10 +18,11 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { listCodeModeToolNames } from "@luan.sh/pi-code-mode/sdk";
+import { appendAgentIdentity } from "../contributions/session-identity.ts";
 import { SUBAGENT_TASK_MESSAGE_TYPE } from "../core/fork-history.ts";
-import { primePromptEnvelope } from "../protocol/prompt-envelope.ts";
 import { buildAgentPrompt } from "../core/prompts.ts";
 import type { AgentConfig, AgentModelReference } from "../core/types.ts";
+import { primePromptEnvelope } from "../protocol/prompt-envelope.ts";
 import { createNestedToolActivityReader } from "./nested-tool-activity.ts";
 
 type AssistantContent = Extract<AgentMessage, { role: "assistant" }>["content"];
@@ -305,6 +306,13 @@ export async function runAgent(ctx: ExtensionContext, prompt: string, options: R
 	};
 
 	const sessionManager = SessionManager.create(effectiveCwd, options.sessionDir);
+	if (options.collaboration)
+		appendAgentIdentity(
+			sessionManager,
+			ctx,
+			options.collaboration.agentPath,
+			options.collaboration.completionDelivery === "none",
+		);
 	for (const message of options.forkedHistory ?? []) {
 		// type-boundary: Pi's AgentMessage union includes summary variants accepted by the runtime but omitted from appendMessage's public parameter.
 		sessionManager.appendMessage(message as object as Parameters<SessionManager["appendMessage"]>[0]);

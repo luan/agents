@@ -2,6 +2,15 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { tuiTheme } from "./color/theme.ts";
 
+/** Geometry shared by scrollbar painting and pointer interaction. */
+export function scrollbarGeometry(height: number, total: number, offset: number) {
+	const thumbHeight = Math.max(1, Math.floor((height * height) / Math.max(1, total)));
+	const trackHeight = Math.max(0, height - thumbHeight);
+	const maxOffset = Math.max(0, total - height);
+	const thumbStart = Math.min(trackHeight, Math.floor((Math.max(0, offset) * trackHeight) / Math.max(1, maxOffset)));
+	return { thumbHeight, trackHeight, maxOffset, thumbStart };
+}
+
 /** Paint the compact scrollbar shared by settings and expanded tool views. */
 export function applyScrollbar(
 	lines: readonly string[],
@@ -12,10 +21,7 @@ export function applyScrollbar(
 	if (width <= 1 || height === 0 || options.total <= height) return [...lines];
 	const output = [...lines];
 	const colors = tuiTheme(options.theme);
-	const thumbHeight = Math.max(1, Math.floor((height * height) / options.total));
-	const trackHeight = height - thumbHeight;
-	const maxOffset = Math.max(1, options.total - height);
-	const thumbStart = Math.min(trackHeight, Math.floor((Math.max(0, options.offset) * trackHeight) / maxOffset));
+	const { thumbHeight, thumbStart } = scrollbarGeometry(height, options.total, options.offset);
 	const contentWidth = Math.max(0, width - 2);
 	for (let row = 0; row < height; row += 1) {
 		const line = truncateToWidth(output[row] ?? "", contentWidth, "");

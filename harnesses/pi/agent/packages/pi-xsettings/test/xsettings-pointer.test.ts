@@ -49,6 +49,111 @@ function lastLineContaining(lines: readonly string[], text: string): number {
 }
 
 describe("xsettings shared pointer composition", () => {
+	test("wheel scrolls the sidebar independently and its bottom entries remain clickable", () => {
+		initTheme("dark", false);
+		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
+		const fields: SettingsScreenField[] = Array.from({ length: 20 }, (_, index) => ({
+			id: `field-${index}`,
+			category: "appearance",
+			storagePath: ["appearance", `field-${index}`],
+			section: `Section ${index}`,
+			label: `Field ${index}`,
+			description: `Description ${index}`,
+			type: "boolean",
+			value: false,
+			defaultValue: false,
+			configured: false,
+		}));
+		const screen = new XSettingsScreen(
+			fields,
+			theme,
+			() => {},
+			() => {},
+			() => {},
+			10,
+		);
+		const before = screen.render(80).map(stripTerminalSequences);
+		const contentColumn = before[0]!.lastIndexOf("UI") - 2;
+		const content = (lines: string[]) => lines.map((line) => line.slice(contentColumn));
+		expect(before.join("\n")).not.toContain("Section 19");
+		for (let index = 0; index < 16; index += 1) {
+			expect(dispatch(screen, { type: "wheel", row: 5, col: 2, wheel: 1 })).toBe(true);
+			screen.render(80);
+		}
+		const after = screen.render(80).map(stripTerminalSequences);
+		expect(content(after)).toEqual(content(before));
+		const bottomSection = after.findIndex((line) => line.includes("Section 19"));
+		expect(bottomSection).toBeGreaterThan(0);
+		click(screen, bottomSection, 2);
+		expect(screen.render(80).map(stripTerminalSequences).join("\n")).toContain("Field 19");
+		// Keyboard navigation takes over from a manually scrolled viewport.
+		screen.handleInput("\t");
+		screen.handleInput("k");
+		expect(screen.render(80).map(stripTerminalSequences).join("\n")).toContain("Field 18");
+	});
+
+	test("wheel events stay inside Settings, including empty space and list boundaries", () => {
+		initTheme("dark", false);
+		const screen = new XSettingsScreen(
+			[],
+			theme,
+			() => {},
+			() => {},
+			() => {},
+			10,
+		);
+		screen.render(80);
+		for (const col of [2, 40, 79]) {
+			for (const row of [0, 5, 9]) {
+				for (const wheel of [-1, 1] as const) {
+					expect(dispatch(screen, { type: "wheel", row, col, wheel })).toBe(true);
+					screen.render(80);
+				}
+			}
+		}
+		expect(dispatch(screen, { type: "wheel", row: 5, col: -1, wheel: 1 })).toBe(false);
+		expect(dispatch(screen, { type: "wheel", row: 5, col: 80, wheel: 1 })).toBe(false);
+	});
+
+	test("scrolling settings content requests a pane repaint without moving the sidebar", () => {
+		initTheme("dark", false);
+		let repaints = 0;
+		const fields: SettingsScreenField[] = Array.from({ length: 12 }, (_, index) => ({
+			id: `field-${index}`,
+			category: "appearance",
+			storagePath: ["appearance", `field-${index}`],
+			section: "General",
+			label: `Field ${index}`,
+			description: `Description ${index}`,
+			type: "boolean",
+			value: false,
+			defaultValue: false,
+			configured: false,
+		}));
+		const screen = new XSettingsScreen(
+			fields,
+			theme,
+			() => {},
+			() => {},
+			() => {},
+			10,
+			[],
+			undefined,
+			undefined,
+			() => repaints++,
+		);
+		const before = screen.render(80).map(stripTerminalSequences);
+		const contentColumn = before[0]!.lastIndexOf("UI") - 2;
+		repaints = 0;
+		expect(dispatch(screen, { type: "wheel", row: 5, col: 50, wheel: 1 })).toBe(true);
+		expect(repaints).toBeGreaterThan(0);
+		const after = screen.render(80).map(stripTerminalSequences);
+		expect(after.map((line) => line.slice(0, contentColumn - 1))).toEqual(
+			before.map((line) => line.slice(0, contentColumn - 1)),
+		);
+		expect(after).not.toEqual(before);
+	});
+
 	test("clicking outside a select restores its live preview", () => {
 		initTheme("dark", false);
 		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));

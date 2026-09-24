@@ -1,4 +1,4 @@
-import { type Color256Index, color256Index, type RgbColor, xtermColor } from "./palette.ts";
+import { type Color256Index, color256Index, type RgbColor, rgb as rgbColor, xtermColor } from "./palette.ts";
 
 /** A resolved palette entry or an exact color measured at a terminal boundary. */
 export type ColorValue = Color256Index | RgbColor;
@@ -30,7 +30,12 @@ export function createColorResolver(context: {
 		ansi,
 		contrast(value: ColorValue) {
 			const background = rgb(value);
-			return contrastRatio(background, rgb(dark)) >= contrastRatio(background, rgb(light)) ? dark : light;
+			const preferred = contrastRatio(background, rgb(dark)) >= contrastRatio(background, rgb(light)) ? dark : light;
+			if (contrastRatio(background, rgb(preferred)) >= 4.5) return preferred;
+			// A dark theme on a light terminal can give the generated palette two dark endpoints.
+			const black = rgbColor(0, 0, 0);
+			const white = rgbColor(255, 255, 255);
+			return contrastRatio(background, black) >= contrastRatio(background, white) ? black : white;
 		},
 		contrastRatio(left: ColorValue, right: ColorValue) {
 			return contrastRatio(rgb(left), rgb(right));

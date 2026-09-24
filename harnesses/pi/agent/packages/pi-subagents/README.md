@@ -177,3 +177,13 @@ extensions after editing. `/subagents` always works without a binding.
 Source: https://github.com/luan/agents, directory
 harnesses/pi/agent/packages/pi-subagents. Run `bun run typecheck` and
 `bun test test` in that directory.
+
+## Conversation and context integration
+
+Child sessions persist a provider-independent `session.identity/v1` record with
+the root session ID, root transcript path, canonical agent name, and interactive
+status. Optional `pi-context-windows` uses it with recorded child transcript paths for
+same-tree history and working notes, including resumed children in other working
+directories. Optional `pi-conversation` uses it to route background clarification
+through the parent mailbox while allowing interactive side sessions their own UI.
+Neither integration adds a runtime dependency on the feature package.

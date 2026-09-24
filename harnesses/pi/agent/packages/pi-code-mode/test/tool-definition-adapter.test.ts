@@ -133,3 +133,27 @@ describe("ToolDefinition Code Mode adapter", () => {
 function component(line: string) {
 	return { render: () => [line], invalidate() {} };
 }
+
+test("a tool disabled after discovery also rejects nested execution", async () => {
+	let active = true;
+	let calls = 0;
+	const tool: ToolDefinition<typeof PARAMETERS, { durationMs: number }> = {
+		name: "conditional",
+		label: "Conditional",
+		description: "Conditional tool",
+		parameters: PARAMETERS,
+		async execute() {
+			calls++;
+			return { content: [], details: { durationMs: 0 } };
+		},
+	};
+	const adapter = codeModeFunctionToolAdapter(tool, { isActive: () => active });
+	const context = { cwd: "/tmp", toolCallId: "call", extensionContext: {} as ExtensionContext };
+	const signal = new AbortController().signal;
+	expect(adapter.isActive?.()).toBe(true);
+	await adapter.invoke({ path: "ok" }, context, signal);
+	active = false;
+	expect(adapter.isActive?.()).toBe(false);
+	expect(() => adapter.invoke({ path: "blocked" }, context, signal)).toThrow("unavailable");
+	expect(calls).toBe(1);
+});

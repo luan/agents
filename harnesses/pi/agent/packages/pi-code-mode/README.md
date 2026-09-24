@@ -217,3 +217,10 @@ toolCallId, extensionContext, signal }` and may return `{ block: true, reason }`
 Source: https://github.com/luan/agents, directory
 harnesses/pi/agent/packages/pi-code-mode. Run `bun run typecheck` and
 `bun test test` in that directory.
+
+## Persistent notebook companion
+
+[`pi-notebook`](../pi-notebook/README.md) adds separate Deno cells with bindings,
+checkpoints, and stored profiles. Code Mode continues to use a fresh restricted
+V8 isolate for every `exec`; installing Notebook does not change that contract.
+Its tools can be called through the normal Code Mode bridge.

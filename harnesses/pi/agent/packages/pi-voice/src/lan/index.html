@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>Pi · Voice</title>
+  <style>
+    :root{font:16px/1.5 ui-sans-serif,system-ui,sans-serif;color:#e3e5ed;background:#171921;--muted:#9da4b9;--line:#333745;--accent:#b6b4ff}
+    *{box-sizing:border-box}body{margin:0}button,textarea{font:inherit}button{cursor:pointer}button:disabled{opacity:.4;cursor:default}[hidden]{display:none!important}
+    button:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+    main{max-width:720px;min-height:100dvh;margin:auto;padding:24px max(24px,env(safe-area-inset-right)) max(24px,env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:24px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:14px;color:var(--muted)}.brand{color:#e3e5ed;font-size:18px;font-weight:650;letter-spacing:-.4px}.brand span{font-weight:400;color:var(--muted);margin-left:8px}
+    #connection{display:flex;align-items:center;gap:8px}#connection::before{content:"";width:6px;height:6px;border-radius:50%;background:#82899c}body[data-connected="true"] #connection::before{background:#a6ceac}
+    .voice{text-align:center;padding:30px 0 24px;border-bottom:1px solid var(--line)}.voice-icon{display:grid;place-items:center;width:56px;height:56px;margin:0 auto 20px;border:1px solid #46445f;border-radius:50%;color:var(--accent);background:#242532}
+    svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}h1{font-size:26px;letter-spacing:-.6px;font-weight:550;margin:0 0 6px}#hint{margin:0 auto;color:var(--muted);font-size:14px;max-width:350px;min-height:42px}
+    .controls{display:flex;justify-content:center;gap:10px;margin-top:22px}.button{display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:9px;border:1px solid var(--line);background:transparent;color:#e3e5ed;padding:10px 16px;min-height:44px;font-weight:550;font-size:14px}.primary{background:var(--accent);border-color:var(--accent);color:#202032}.danger{color:#f1acb4}.button:hover:not(:disabled){filter:brightness(1.12);border-color:#79798f}
+    .level{height:3px;background:#303342;border-radius:4px;overflow:hidden;width:100px;margin:16px auto 0}.level div{height:100%;width:0;background:var(--accent);transition:width .08s}
+    #error{margin:0;color:#f1acb4;border-left:2px solid #c5838c;padding:8px 12px;font-size:14px}#error:empty{display:none}
+    #messages{flex:1;min-height:80px;display:flex;flex-direction:column;gap:24px}#empty{color:var(--muted);font-size:14px;margin:auto;text-align:center;padding:16px}article{font-size:15px;overflow-wrap:anywhere}article h2{font-size:12px;letter-spacing:.04em;color:var(--muted);margin:0 0 7px;font-weight:550}article p{white-space:pre-wrap;margin:0}article[data-role="user"]{background:#222530;border-radius:12px;padding:14px 16px;align-self:flex-end;max-width:92%}
+    .composer{border:1px solid #454958;border-radius:14px;background:#1d202a;padding:14px 16px 12px}.composer:focus-within{border-color:#8988b9}.composer label{font-size:12px;color:var(--muted)}textarea{display:block;resize:vertical;background:transparent;color:inherit;border:0;width:100%;min-height:76px;max-height:240px;padding:10px 0;outline:none!important;line-height:1.5}textarea::placeholder{color:#80889e}.compose-actions{display:flex;align-items:center;justify-content:space-between;gap:10px}.compose-actions .button{padding:8px 12px}.dictation-controls{display:flex;gap:8px}#draft-status{font-size:12px;color:var(--accent);margin:0 0 8px}footer{font-size:12px;color:#80889e;text-align:center;margin-top:-10px}
+    @media(max-width:480px){main{padding:20px 18px max(20px,env(safe-area-inset-bottom));gap:20px}.voice{padding:16px 0 22px}h1{font-size:24px}.voice-icon{margin-bottom:16px}header{font-size:12px}.button{padding:10px 14px}}
+    @media(prefers-reduced-motion:reduce){.level div{transition:none}}
+  </style>
+</head>
+<body>
+<main>
+  <header><div class="brand">Pi <span>Voice</span></div><span id="connection" role="status">Connecting…</span></header>
+  <section class="voice" aria-labelledby="status">
+    <div class="voice-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 10v4m4-8v12m4-15v18m4-15v12m4-8v4"/></svg></div>
+    <h1 id="status" aria-live="polite">Ready when you are</h1>
+    <p id="hint">Talk to the same Pi session running on your computer.</p>
+    <div class="controls" aria-label="Voice controls">
+      <button class="button primary" id="start" disabled>Start voice</button>
+      <button class="button" id="mute" hidden>Mute</button>
+      <button class="button danger" id="stop" hidden>End voice</button>
+    </div>
+    <div class="level" id="level" role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><div id="level-fill"></div></div>
+  </section>
+  <p id="error" role="alert"></p>
+  <section id="messages" aria-label="Conversation" aria-live="polite"><p id="empty">Pi’s replies will appear here.</p></section>
+  <section class="composer" aria-label="Message composer">
+    <label for="draft">Message Pi</label>
+    <textarea id="draft" placeholder="Type a message, or dictate a draft…"></textarea>
+    <p id="draft-status" role="status" hidden></p>
+    <div class="compose-actions">
+      <div class="dictation-controls">
+        <button class="button" id="dictate" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M6 11v1a6 6 0 0 0 12 0v-1m-6 7v3m-3 0h6"/></svg>Dictate</button>
+        <button class="button" id="finish" hidden>Finish dictation</button>
+        <button class="button" id="cancel" hidden>Cancel</button>
+      </div>
+      <button class="button primary" id="send" disabled>Send <span aria-hidden="true">↑</span></button>
+    </div>
+  </section>
+  <footer>Your Pi session · GipPity</footer>
+</main>
+<script src="/client.js"></script>
+</body>
+</html>

@@ -18,6 +18,7 @@ export interface ViewImageContent {
 }
 
 export interface ViewImageDetails {
+	description?: { text: string; model: string };
 	version: 1;
 	tool: "view_image";
 	status: "success";

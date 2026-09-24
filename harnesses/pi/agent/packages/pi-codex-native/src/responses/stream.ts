@@ -1,3 +1,4 @@
+import { localFunctionName } from "./tool-names.ts";
 import { calculateCost, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import type { AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { appendGrammarToolInputJsonDelta, type GrammarToolInputJsonBuffer } from "../constrained-sampling.ts";
@@ -257,7 +258,7 @@ export async function processResponsesStream<TApi extends Api>(
 				const currentBlock: ToolCallBlock = {
 					type: "toolCall",
 					id: `${item.call_id}|${item.id}`,
-					name: item.name,
+					name: localFunctionName(item.name, item.namespace),
 					arguments: {},
 					...(namespace !== undefined ? { namespace } : {}),
 					partialJson: item.arguments || "",
@@ -436,14 +437,17 @@ export async function processResponsesStream<TApi extends Api>(
 				let toolCall: ToolCallBlock;
 				if (state?.kind === "function_call") {
 					state.block.arguments = args;
-					if (namespace !== undefined) state.block.namespace = namespace;
+					if (namespace !== undefined) {
+						state.block.namespace = namespace;
+						state.block.name = localFunctionName(item.name, namespace);
+					}
 					delete state.block.partialJson;
 					toolCall = state.block;
 				} else {
 					toolCall = {
 						type: "toolCall",
 						id: `${item.call_id}|${item.id}`,
-						name: item.name,
+						name: localFunctionName(item.name, item.namespace),
 						arguments: args,
 						...(namespace !== undefined ? { namespace } : {}),
 					};

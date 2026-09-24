@@ -47,6 +47,11 @@ neither a generated 256-color palette nor an ANSI base-16 palette, the host
 switches to Pi's built-in theme for the detected light or dark scheme (dark if
 the measurement fails).
 
+Painted surfaces set a contrasting default foreground as well as a background,
+including after child text resets its colors. Explicit text colors remain
+intact. If the generated palette cannot provide readable contrast, button and
+surface text uses black or white instead.
+
 ## Components
 
 Captures of the shared components inside the extensions that use them. The
@@ -100,6 +105,10 @@ editors), `SelectionActionBar` (pi-copy-mode), `FramedEditorOverlay`,
 `mountHoverTooltip`, `FloatingOverlay`, `ActivityIndicator` styles, and
 `applyScrollbar`. Add them here when a gallery recording shows them in use.
 
+`SemanticInput` supports inline fields through an optional `onFocus` callback
+and an empty-field `placeholder`. The embedding component owns keyboard focus
+and restoration; libtui owns pointer targeting and the insertion cursor.
+
 ## Public modules
 
 Every entry point is a side-effect-free import. "Host required" means the
@@ -124,6 +133,10 @@ payload), `ToolActivity` (streaming, diff, terminal, and viewport state for a
 live surface), and `ToolOutput` for text streams. `mountTranscriptProjection`
 exposes native transcript entries to a feature-owned component through a
 guarded Pi 0.84–0.85 adapter; unsupported hosts keep their native transcript.
+Expanded output supports Page Up/Down after opening its header, mouse-wheel
+scrolling, and scrollbar dragging. Nested viewports reserve separate scrollbar
+columns and expose their clipped child geometry to the mouse host, preserving
+native text selection outside scrollbar gestures.
 
 ## Native binaries
 

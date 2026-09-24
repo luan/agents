@@ -54,13 +54,18 @@ export class BackgroundSurface implements Component, TextInteractionTarget {
 		)
 			return this.cachedOutput;
 		const minimumRows = Math.max(1, Math.floor(this.options.minimumRows ?? 1));
+		const colors = tuiTheme(this.options.theme);
+		const background = this.options.background ?? TOOL_SURFACE_BACKGROUND;
 		const output =
 			input.length < minimumRows
 				? input
 				: paintRows(
 						input,
 						boundedWidth,
-						tuiTheme(this.options.theme).bgAnsi(this.options.background ?? TOOL_SURFACE_BACKGROUND),
+						colors.bgAnsi(background),
+						colors.fgAnsi(
+							colors.contrastBackground(typeof background === "string" ? colors.color(background) : background),
+						),
 					);
 		this.cachedWidth = boundedWidth;
 		this.cachedEpoch = epoch;
@@ -111,15 +116,16 @@ export class BackgroundSurface implements Component, TextInteractionTarget {
 	}
 }
 
-function paintRows(input: readonly string[], width: number, background: string): string[] {
+function paintRows(input: readonly string[], width: number, background: string, foreground: string): string[] {
 	return input.map((line) => {
 		const clipped = truncateToWidth(line, width, "…")
 			.replaceAll("\x1b[49m", `\x1b[49m${background}`)
-			.replaceAll("\x1b[0m", `\x1b[0m${background}`);
+			.replaceAll("\x1b[39m", `\x1b[39m${foreground}`)
+			.replaceAll("\x1b[0m", `\x1b[0m${background}${foreground}`);
 		// Child content may leave a foreground/style SGR active (for example an
 		// underline or an external background). Reset before painting padding so
 		// that a short row cannot leak that style across the rest of the surface.
 		const padded = `${clipped}\x1b[0m${background}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
-		return `${background}${padded}\x1b[49m`;
+		return `${background}${foreground}${padded}\x1b[49m\x1b[39m`;
 	});
 }

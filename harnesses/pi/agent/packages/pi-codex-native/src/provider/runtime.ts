@@ -1,3 +1,6 @@
+import { reasoningHistory, reasoningRequest, type ReasoningEntry } from "./reasoning-updates.ts";
+import { conversationToolAllowed } from "./conversation-policy.ts";
+import { isNonRootAgent } from "../contributions/model-tool-policy.ts";
 import { createHash } from "node:crypto";
 import type {
 	Api,
@@ -10,13 +13,16 @@ import type {
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { listCodeModeToolNames } from "@luan.sh/pi-code-mode/sdk";
 import { createGrammarToolInputProperties } from "../constrained-sampling.ts";
-import { buildRequestBody } from "./request-body.ts";
+import { recoveryWindow, verifyRecoveryRequest } from "../contributions/context-recovery.ts";
+import { getCodexNativeSettings, type CodexNativeSettings } from "../contributions/xsettings.ts";
+import {
+	persistentHistory,
+	persistentRequest,
+	type PersistentContextEntry,
+	type PersistentRequestState,
+} from "./persistent-mode.ts";
 import { normalizeResponsesToolHistory } from "../responses/tool-history.ts";
-import { createCodexTransportStream, type CodexTransportRecoveryDependencies } from "./transport-recovery.ts";
-import { prewarmWebSocket } from "./websocket-stream.ts";
-import { combineAbortSignals } from "./sse.ts";
-import { closeOpenAICodexWebSocketSessions, resetOpenAICodexWebSocketSessions } from "./websocket.ts";
-import { createCodexTurnState, type CodexTurnState } from "./turn-state.ts";
+import { codexOAuth } from "./auth.ts";
 import {
 	buildWebSocketHeaders,
 	createCodexRequestId,
@@ -24,14 +30,19 @@ import {
 	resolveCodexRequestRouting,
 	resolveCodexWebSocketUrl,
 } from "./headers.ts";
-import { codexOAuth } from "./auth.ts";
-import { getCodexModels, type CodexModel } from "./models.ts";
+import { type CodexModel, getCodexModels } from "./models.ts";
+import { buildRequestBody } from "./request-body.ts";
+import { combineAbortSignals } from "./sse.ts";
+import { type CodexTransportRecoveryDependencies, createCodexTransportStream } from "./transport-recovery.ts";
+import { type CodexTurnState, createCodexTurnState } from "./turn-state.ts";
 import type {
 	CodexDiagnosticsSink,
 	CodexProviderStreamOptions,
 	OpenAICodexStreamOptions,
 	ResponsesBody,
 } from "./types.ts";
+import { closeOpenAICodexWebSocketSessions, resetOpenAICodexWebSocketSessions } from "./websocket.ts";
+import { prewarmWebSocket } from "./websocket-stream.ts";
 
 export interface CodexRuntimePlan {
 	active: boolean;
@@ -49,6 +60,10 @@ export interface CodexRuntimeState {
 }
 
 export interface CodexProviderRuntimeOptions {
+	getSettings?: (sessionId?: string) => CodexNativeSettings;
+	now?: () => number;
+	recordReasoningContext?: (sessionId: string, entry: ReasoningEntry) => void;
+	recordPersistentContext?: (sessionId: string, entry: PersistentContextEntry) => void;
 	diagnostics?: CodexDiagnosticsSink;
 	prewarmTransport?: typeof prewarmWebSocket;
 }
@@ -119,6 +134,14 @@ export function createCodexPrewarmIdentity(input: {
  * Pi lifecycle events call this object instead of reaching into transport modules.
  */
 export class CodexProviderRuntime {
+	private readonly reasoningRequests = new Map<string, ReasoningEntry[]>();
+	private readonly recordReasoningContext?: CodexProviderRuntimeOptions["recordReasoningContext"];
+	private readonly persistentRequests = new Map<string, PersistentRequestState>();
+	private readonly sessionManagers = new Map<string, ExtensionContext["sessionManager"]>();
+	private readonly recordPersistentContext?: CodexProviderRuntimeOptions["recordPersistentContext"];
+	private readonly getSettings: (sessionId?: string) => CodexNativeSettings;
+	private readonly now: () => number;
+	private readonly recoveryWindows = new Map<string, string>();
 	private readonly sessions = new Map<string, CodexRuntimeState>();
 	private readonly models: readonly CodexModel[] = getCodexModels();
 	private readonly listeners = new Set<CodexDiagnosticsSink>();
@@ -130,6 +153,10 @@ export class CodexProviderRuntime {
 	private stopped = false;
 
 	constructor(options: CodexProviderRuntimeOptions = {}) {
+		this.getSettings = options.getSettings ?? getCodexNativeSettings;
+		this.now = options.now ?? Date.now;
+		this.recordPersistentContext = options.recordPersistentContext;
+		this.recordReasoningContext = options.recordReasoningContext;
 		this.diagnostics = options.diagnostics;
 		this.prewarmTransport = options.prewarmTransport ?? prewarmWebSocket;
 	}
@@ -166,6 +193,7 @@ export class CodexProviderRuntime {
 	startSession(ctx: ExtensionContext): void {
 		const sessionId = sessionIdFor(ctx);
 		if (!sessionId) return;
+		this.sessionManagers.set(sessionId, ctx.sessionManager);
 		this.stopped = false;
 		const current = this.sessions.get(sessionId);
 		if (current) {
@@ -205,6 +233,10 @@ export class CodexProviderRuntime {
 		closeOpenAICodexWebSocketSessions(sessionId);
 		this.requestAuth.delete(sessionId);
 		this.sessions.delete(sessionId);
+		this.recoveryWindows.delete(sessionId);
+		this.persistentRequests.delete(sessionId);
+		this.reasoningRequests.delete(sessionId);
+		this.sessionManagers.delete(sessionId);
 	}
 
 	shutdown(): void {
@@ -216,6 +248,10 @@ export class CodexProviderRuntime {
 		this.requestAuth.clear();
 		closeOpenAICodexWebSocketSessions();
 		this.sessions.clear();
+		this.recoveryWindows.clear();
+		this.persistentRequests.clear();
+		this.reasoningRequests.clear();
+		this.sessionManagers.clear();
 	}
 
 	resetTransportAfterCompaction(sessionId: string): void {
@@ -308,14 +344,76 @@ export class CodexProviderRuntime {
 		const diagnostics = () => this.getDiagnostics();
 		const deps: CodexTransportRecoveryDependencies = {
 			prepareRequestBody: async (requestModel, requestContext, requestOptions) => {
-				const grammarToolInputProperties = createGrammarToolInputProperties(requestContext.tools, true);
-				let body = buildRequestBody(requestModel, requestContext, {
-					...requestOptions,
-					codeModeToolNames: listCodeModeToolNames(),
-					grammarToolInputProperties,
-				});
+				const window = recoveryWindow(sessionId);
+				if (window && sessionId && this.recoveryWindows.get(sessionId) !== window.id) {
+					this.resetTransportAfterCompaction(sessionId);
+					this.recoveryWindows.set(sessionId, window.id);
+				}
+				const manager = sessionId ? this.sessionManagers.get(sessionId) : undefined;
+				const settings = this.getSettings(sessionId);
+				const tools = requestContext.tools?.filter((tool) =>
+					conversationToolAllowed(tool.name, requestModel.id, isNonRootAgent(manager?.getBranch() ?? []), settings),
+				);
+				const grammarToolInputProperties = createGrammarToolInputProperties(tools, true);
+				let body = buildRequestBody(
+					requestModel,
+					{ ...requestContext, tools },
+					{
+						...requestOptions,
+						codeModeToolNames: listCodeModeToolNames(),
+						grammarToolInputProperties,
+					},
+				);
 				const nextBody = await requestOptions?.onPayload?.(body, requestModel);
 				if (nextBody !== undefined) body = nextBody as ResponsesBody;
+				if (requestOptions?.canonicalCompaction) {
+					const entries = manager?.getBranch() ?? [];
+					const trigger = body.input.at(-1);
+					const hasTrigger =
+						trigger && typeof trigger === "object" && "type" in trigger && trigger.type === "compaction_trigger";
+					// Replay effort history without persisting an inference or retiring the live baseline on failure.
+					const replay = reasoningRequest(
+						{ ...body, input: hasTrigger ? body.input.slice(0, -1) : body.input },
+						manager && this.recordReasoningContext
+							? reasoningHistory(entries)
+							: sessionId
+								? (this.reasoningRequests.get(sessionId) ?? [])
+								: [],
+						window?.id ?? [...entries].reverse().find((entry) => entry.type === "compaction")?.id ?? "initial",
+					).body;
+					return hasTrigger ? { ...replay, input: [...replay.input, trigger] } : replay;
+				}
+				const persistent = persistentRequest(
+					body,
+					settings,
+					tools?.map((tool) => tool.name) ?? [],
+					this.now(),
+					manager && this.recordPersistentContext
+						? persistentHistory(manager.getBranch())
+						: sessionId
+							? this.persistentRequests.get(sessionId)
+							: undefined,
+					window?.id,
+				);
+				body = persistent.body;
+				const entries = manager?.getBranch() ?? [];
+				const reasoning = reasoningRequest(
+					body,
+					manager && this.recordReasoningContext
+						? reasoningHistory(entries)
+						: sessionId
+							? (this.reasoningRequests.get(sessionId) ?? [])
+							: [],
+					window?.id ?? [...entries].reverse().find((entry) => entry.type === "compaction")?.id ?? "initial",
+				);
+				body = reasoning.body;
+				if (sessionId && reasoning.added) this.recordReasoningContext?.(sessionId, reasoning.added);
+				if (sessionId) this.reasoningRequests.set(sessionId, reasoning.entries);
+				if (sessionId && persistent.added) this.recordPersistentContext?.(sessionId, persistent.added);
+				if (sessionId) this.persistentRequests.set(sessionId, persistent.state);
+				requestOptions?.signal?.throwIfAborted();
+				if (requestContext.tools?.some((tool) => tool.name === "new_context"))
+					verifyRecoveryRequest(sessionId, body.input ?? []);
 				if (!body.previous_response_id) {
 					const input = normalizeResponsesToolHistory(body.input ?? []);
 					if (input !== body.input) body = { ...body, input };

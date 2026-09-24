@@ -1,9 +1,4 @@
-import type {
-	AgentToolResult,
-	ExtensionContext,
-	Theme,
-	ToolRenderResultOptions,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import {
 	getNestedToolAdapterRegistry,
@@ -16,6 +11,7 @@ import {
 } from "./nested-tools.ts";
 
 export interface CodeModeFunctionToolOptions<TDetails> {
+	isActive?(): boolean;
 	outputSchema?: NestedToolInput;
 	resultValue?(result: AgentToolResult<TDetails>): NestedToolDetails;
 }
@@ -38,7 +34,7 @@ interface FunctionToolRenderContext<TState, TInput> {
 	isError: boolean;
 }
 
-interface FunctionTool<TInput, TDetails, TState, TParameters> {
+interface FunctionTool<TInput, TDetails, TState, TParameters, TContext, TTheme> {
 	name: string;
 	description: string;
 	parameters: TParameters;
@@ -48,13 +44,13 @@ interface FunctionTool<TInput, TDetails, TState, TParameters> {
 		input: TInput,
 		signal: AbortSignal | undefined,
 		onUpdate: ((result: AgentToolResult<TDetails>) => void) | undefined,
-		context: ExtensionContext,
+		context: TContext,
 	): Promise<AgentToolResult<TDetails>>;
-	renderCall?(args: TInput, theme: Theme, context: FunctionToolRenderContext<TState, TInput>): Component;
+	renderCall?(args: TInput, theme: TTheme, context: FunctionToolRenderContext<TState, TInput>): Component;
 	renderResult?(
 		result: AgentToolResult<TDetails>,
 		options: ToolRenderResultOptions,
-		theme: Theme,
+		theme: TTheme,
 		context: FunctionToolRenderContext<TState, TInput>,
 	): Component;
 }
@@ -65,22 +61,23 @@ interface FunctionTool<TInput, TDetails, TState, TParameters> {
  * Execution, argument preparation, and both presentation phases are derived
  * from the ToolDefinition so direct and nested calls cannot drift.
  */
-export function registerCodeModeFunctionTool<TInput, TDetails, TState, TParameters>(
-	tool: FunctionTool<TInput, TDetails, TState, TParameters>,
+export function registerCodeModeFunctionTool<TInput, TDetails, TState, TParameters, TContext, TTheme>(
+	tool: FunctionTool<TInput, TDetails, TState, TParameters, TContext, TTheme>,
 	options: CodeModeFunctionToolOptions<TDetails> = {},
 ): () => void {
 	const adapter = codeModeFunctionToolAdapter(tool, options);
 	return getNestedToolAdapterRegistry().register(adapter);
 }
 
-export function codeModeFunctionToolAdapter<TInput, TDetails, TState, TParameters>(
-	tool: FunctionTool<TInput, TDetails, TState, TParameters>,
+export function codeModeFunctionToolAdapter<TInput, TDetails, TState, TParameters, TContext, TTheme>(
+	tool: FunctionTool<TInput, TDetails, TState, TParameters, TContext, TTheme>,
 	options: CodeModeFunctionToolOptions<TDetails> = {},
 ): NestedToolAdapter {
 	return {
 		name: tool.name,
 		kind: "function",
 		owner: tool,
+		...(options.isActive ? { isActive: options.isActive } : {}),
 		description: tool.description,
 		parameters: tool.parameters,
 		...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
@@ -95,19 +92,22 @@ export function codeModeFunctionToolAdapter<TInput, TDetails, TState, TParameter
 				}
 			: {}),
 		invoke(input: NestedToolInput, context: NestedToolInvocationContext, signal: AbortSignal) {
+			if (options.isActive?.() === false) throw new Error(`${tool.name} is unavailable in the current session mode`);
 			return tool.execute(
 				context.toolCallId,
 				input as TInput,
 				signal,
 				context.onUpdate,
-				context.extensionContext,
+				// Pi core is a peer dependency. A packaged tool can carry the same
+				// public context type from a different installed Pi version.
+				context.extensionContext as TContext,
 			) as Promise<AgentToolResult<NestedToolDetails>>;
 		},
 	};
 }
 
-function renderToolDefinitionTrace<TInput, TDetails, TState, TParameters>(
-	tool: FunctionTool<TInput, TDetails, TState, TParameters>,
+function renderToolDefinitionTrace<TInput, TDetails, TState, TParameters, TContext, TTheme>(
+	tool: FunctionTool<TInput, TDetails, TState, TParameters, TContext, TTheme>,
 	trace: NestedToolPresentationTrace,
 	context: NestedToolPresentationContext,
 ): Component | undefined {
@@ -115,16 +115,21 @@ function renderToolDefinitionTrace<TInput, TDetails, TState, TParameters>(
 	const renderContext = toolRenderContext<TInput, TState>(args, trace, context);
 	if (trace.result && tool.renderResult) {
 		const options: ToolRenderResultOptions = { expanded: false, isPartial: trace.status === "running" };
-		return tool.renderResult(toolResult<TDetails>(trace.result.content, trace.result.details), options, context.theme, {
-			...renderContext,
-			executionStarted: context.executionStarted !== false,
-		});
+		return tool.renderResult(
+			toolResult<TDetails>(trace.result.content, trace.result.details),
+			options,
+			context.theme as TTheme,
+			{
+				...renderContext,
+				executionStarted: context.executionStarted !== false,
+			},
+		);
 	}
 	// An error without a typed result belongs to Code Mode's generic failure
 	// presentation. Returning a call component here would hide that failure.
 	if (trace.status === "error") return undefined;
 	if (trace.status === "running" && tool.renderCall) {
-		return tool.renderCall(args, context.theme, {
+		return tool.renderCall(args, context.theme as TTheme, {
 			...renderContext,
 			executionStarted: context.executionStarted !== false,
 		});

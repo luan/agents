@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 import registerNativeCompaction from "../src/compaction/extension.ts";
-import { DEFAULT_CODEX_NATIVE_SETTINGS } from "../src/contributions/xsettings.ts";
 import { serializeMessagesToResponsesInput } from "../src/compaction/serializer.ts";
 import { createNativeCompactionDetails, NATIVE_COMPACTION_SHIM_SUMMARY } from "../src/compaction/types.ts";
+import { DEFAULT_CODEX_NATIVE_SETTINGS } from "../src/contributions/xsettings.ts";
 
 // type-boundary: These records model the small subset of the external Pi extension API used by this harness.
 type TestRecord = Record<string, unknown>;
@@ -25,8 +26,11 @@ function hooks(options: { activeTools?: string[]; allTools?: unknown[]; fallback
 	const registered = new Map<string, Hook>();
 	registerNativeCompaction(
 		{
+			events: createEventBus(),
 			on(name: string, handler: Hook) {
-				registered.set(name, handler);
+				registered.set(name, (event, context) =>
+					handler(event, { sessionManager: { getSessionId: () => "test-session" }, ...context }),
+				);
 			},
 			getActiveTools: () => options.activeTools ?? [],
 			getAllTools: () => options.allTools ?? [],
@@ -80,7 +84,7 @@ test("the provider hook leaves sessions without a remote checkpoint unchanged", 
 		{ payload: { model: "gpt-5.6-sol", input: [] } },
 		{
 			model: { provider: "openai-codex", api: "openai-codex-responses" },
-			sessionManager: { getBranch: () => [] },
+			sessionManager: { getSessionId: () => "empty-session", getBranch: () => [] },
 		},
 	);
 	expect(result).toBeUndefined();
@@ -235,6 +239,7 @@ test("the provider hook restores the remote replay window after session resume",
 				}),
 			},
 			sessionManager: {
+				getSessionId: () => "replay-session",
 				getBranch: () => [kept, compaction, tail, assistantTail, toolTail, switchedModelTail],
 			},
 			hasUI: false,

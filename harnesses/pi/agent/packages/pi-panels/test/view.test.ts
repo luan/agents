@@ -80,3 +80,53 @@ test("runs a contributed panel action instead of forwarding its shortcut to the 
 	expect(actions).toEqual(["panels.tuicr.open"]);
 	expect(childInput).toEqual([]);
 });
+
+test("header wheel events stay in the panel while body scrolling stays delegated", () => {
+	let bodyWheels = 0;
+	const active: SidePanelTab = {
+		id: "settings",
+		label: "Settings",
+		create: () => ({
+			render: () => [],
+			invalidate() {},
+			onMouse: () => {
+				bodyWheels++;
+				return false;
+			},
+		}),
+	};
+	const model: SidePanelViewModel = {
+		runAction() {},
+		tabs: () => [active],
+		activeTab: () => active,
+		emptyActions: () => [],
+		activate() {},
+		close() {},
+		move() {},
+		requestRender() {},
+	};
+	const host = {
+		getTerminalSize: () => ({ columns: 80, rows: 24 }),
+		requestRender() {},
+		focus() {},
+		blur() {},
+		isFocused: () => false,
+	} as never as SplitPaneHost;
+	const view = new SidePanelView(model, host, {} as Theme, {});
+	const event = {
+		type: "wheel" as const,
+		row: 0,
+		col: 5,
+		screenRow: 0,
+		screenCol: 5,
+		button: undefined,
+		wheel: 1 as const,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	};
+	expect(view.onMouse(event)).toBe(true);
+	expect(bodyWheels).toBe(0);
+	expect(view.onMouse({ ...event, row: 5 })).toBe(false);
+	expect(bodyWheels).toBe(1);
+});

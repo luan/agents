@@ -2,8 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { matchesKey } from "@earendil-works/pi-tui";
 import type { TuiMouseEvent } from "../mouse.ts";
-import { getTuiRenderEpoch } from "../render-epoch.ts";
-import { applyScrollbar } from "../scrollbar.ts";
+import { applyScrollbar, scrollbarGeometry } from "../scrollbar.ts";
 
 /** Shared bounded payload viewport for every expanded mode. */
 export class ExpandedRegionViewport implements Component {
@@ -13,9 +12,8 @@ export class ExpandedRegionViewport implements Component {
 	private renderedWidth = 0;
 	private renderedBodyHeight = 0;
 	private renderedContentHeight = 0;
-	private cachedWidth = -1;
-	private cachedEpoch = -1;
-	private cachedLines: string[] | undefined;
+	private renderedContentWidth = 0;
+	private dragOffset: number | undefined;
 
 	constructor(
 		private readonly renderSource: (width: number) => string[],
@@ -35,13 +33,10 @@ export class ExpandedRegionViewport implements Component {
 
 	render(width: number): string[] {
 		this.renderedWidth = Math.max(0, Math.floor(width));
-		const epoch = getTuiRenderEpoch();
-		if (this.cachedWidth !== this.renderedWidth || this.cachedEpoch !== epoch || !this.cachedLines) {
-			this.cachedWidth = this.renderedWidth;
-			this.cachedEpoch = epoch;
-			this.cachedLines = this.renderSource(this.renderedWidth);
-		}
-		const lines = this.cachedLines;
+		// Reserve the scrollbar lane before rendering, including nested scrollbars.
+		this.renderedContentWidth = this.renderedWidth > 2 ? this.renderedWidth - 2 : this.renderedWidth;
+		// Child controls can change independently; their renderers own content caching.
+		const lines = this.renderSource(this.renderedContentWidth);
 		this.renderedContentHeight = lines.length;
 		this.renderedBodyHeight = this.maxHeight;
 		const maxScrollTop = Math.max(0, lines.length - this.renderedBodyHeight);
@@ -60,6 +55,14 @@ export class ExpandedRegionViewport implements Component {
 		return this.scrollTop;
 	}
 
+	get contentWidth(): number {
+		return this.renderedContentWidth;
+	}
+
+	get contentHeight(): number {
+		return this.renderedContentHeight;
+	}
+
 	handleViewportInput(data: string): boolean {
 		if (matchesKey(data, "up")) return this.scrollBy(-1);
 		if (matchesKey(data, "down")) return this.scrollBy(1);
@@ -71,18 +74,47 @@ export class ExpandedRegionViewport implements Component {
 	}
 
 	onMouse(event: TuiMouseEvent): boolean {
-		if (event.type !== "wheel" || event.wheel === undefined) return false;
-		return this.scrollBy(event.wheel === -1 ? -3 : 3);
+		if (event.type === "wheel" && event.wheel !== undefined) return this.scrollBy(event.wheel === -1 ? -3 : 3);
+		const geometry = scrollbarGeometry(this.renderedBodyHeight, this.renderedContentHeight, this.scrollTop);
+		if (this.dragOffset !== undefined) {
+			if (event.type === "release") {
+				this.dragOffset = undefined;
+				return true;
+			}
+			if (event.type === "drag") {
+				this.scrollTo(
+					Math.round(((event.row - this.dragOffset) * geometry.maxOffset) / Math.max(1, geometry.trackHeight)),
+				);
+				return true;
+			}
+		}
+		if (
+			this.renderedWidth <= 1 ||
+			geometry.maxOffset === 0 ||
+			event.col !== this.renderedWidth - 1 ||
+			event.row < 0 ||
+			event.row >= this.renderedBodyHeight
+		)
+			return false;
+		if (event.type !== "press" || event.button !== 0) return false;
+		const onThumb = event.row >= geometry.thumbStart && event.row < geometry.thumbStart + geometry.thumbHeight;
+		this.dragOffset = onThumb ? event.row - geometry.thumbStart : Math.floor(geometry.thumbHeight / 2);
+		if (!onThumb)
+			this.scrollTo(
+				Math.round(((event.row - this.dragOffset) * geometry.maxOffset) / Math.max(1, geometry.trackHeight)),
+			);
+		return true;
 	}
 
-	invalidate(): void {
-		this.cachedLines = undefined;
-		this.cachedWidth = -1;
-		this.cachedEpoch = -1;
+	capturesPointer(): boolean {
+		return this.dragOffset !== undefined;
 	}
+
+	invalidate(): void {}
 
 	scrollToStart(): void {
 		this.scrollTop = 0;
+		this.dragOffset = undefined;
 	}
 
 	private maxScrollTop(): number {

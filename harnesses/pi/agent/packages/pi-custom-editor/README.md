@@ -33,7 +33,8 @@ without it the defaults apply and there is no in-app way to change them.
   extension already installed an editor factory, that editor is decorated
   (its render output is re-composed) rather than replaced.
 - Replaces the footer through Pi's `setFooter` with a status row driven by the
-  same composition settings.
+  same composition settings. Active extension statuses appear below it, including
+  voice recording and transcription.
 - Reads Pi's git branch, session name, model, provider, thinking level,
   context-window usage, per-session token/cost totals, and extension
   `setStatus` entries for status segments.

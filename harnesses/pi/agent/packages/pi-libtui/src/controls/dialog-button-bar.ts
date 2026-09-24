@@ -251,7 +251,12 @@ export class DialogButtonBar<Value extends string = string> implements Component
 				true,
 			);
 		}
-		const foreground = colors.fg(button.foreground, renderedLabel);
+		const foreground = colors.fg(
+			button.foreground === "text.primary"
+				? colors.contrastBackground(typeof background === "string" ? colors.color(background) : background)
+				: button.foreground,
+			renderedLabel,
+		);
 		return colors.bg(background, foreground);
 	}
 

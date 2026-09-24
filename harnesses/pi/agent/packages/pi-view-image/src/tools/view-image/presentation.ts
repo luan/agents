@@ -10,6 +10,7 @@ interface ViewImageRenderContext {
 	readonly invalidate: () => void;
 	readonly lastComponent: object | undefined;
 	readonly isError: boolean;
+	readonly expanded?: boolean;
 }
 
 export function renderViewImageCall(args: { readonly path?: string }, theme: Theme, context: ViewImageRenderContext) {
@@ -44,8 +45,15 @@ export function renderViewImageResult(
 		theme,
 		requestRender: context.invalidate,
 		view: {
+			...(details?.description
+				? {
+						payload: { kind: "text" as const, text: details.description.text, revision: 1 },
+						mode: context.expanded ? ("full" as const) : ("preview" as const),
+					}
+				: {}),
 			action: {
-				verb: failed ? "View image failed" : "Viewed image",
+				verb: failed ? "View image failed" : details.description ? "Described image" : "Viewed image",
+				detail: details?.description?.model,
 				status: failed ? "failed" : "succeeded",
 				marker: icon(VIEW_IMAGE_ICON),
 				markerTone: VIEW_IMAGE_ICON_TONE,

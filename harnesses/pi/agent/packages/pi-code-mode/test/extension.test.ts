@@ -78,6 +78,7 @@ describe("Code Mode extension", () => {
 		expect([...handlers.keys()]).toEqual([
 			"session_start",
 			"model_select",
+			"before_agent_start",
 			"tool_result",
 			"session_tree",
 			"session_shutdown",

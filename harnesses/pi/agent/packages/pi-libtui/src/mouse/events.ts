@@ -40,6 +40,8 @@ export interface TextInteractionTarget {
 	setViewportFocus(focused: boolean): void;
 	/** Handle one unclaimed viewport key. Return true only when it was consumed. */
 	handleViewportInput(data: string): boolean;
+	/** Capture an active non-text gesture, such as a scrollbar drag, instead of native selection. */
+	capturesPointer?(): boolean;
 }
 
 /** A terminal-cell rectangle in zero-based screen coordinates. */

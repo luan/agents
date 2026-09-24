@@ -290,26 +290,13 @@ describe("view_image", () => {
 		).toEqual({ image_url: "data:image/png;base64,AAAA", detail: "high" });
 	});
 
-	test("publishes the Codex-compatible Code Mode output schema", () => {
-		const dispose = registerViewImageCodeModeAdapter(createViewImageTool());
-		try {
-			expect(getCodeModeToolAdapterRegistry().adapters.get("view_image")?.outputSchema).toEqual({
-				type: "object",
-				properties: {
-					image_url: { type: "string", description: "Data URL for the loaded image." },
-					detail: {
-						type: "string",
-						enum: ["high", "original"],
-						description:
-							"Image detail hint returned by view_image. Returns `high` for default resized behavior or `original` when original resolution is preserved.",
-					},
-				},
-				required: ["image_url", "detail"],
-				additionalProperties: false,
-			});
-		} finally {
-			dispose();
-		}
+	test("returns generated descriptions to Code Mode without requiring image pixels", () => {
+		expect(
+			codeModeImageResult({
+				content: [{ type: "text", text: "A red square, described by a vision model." }],
+				details: undefined,
+			}),
+		).toEqual({ description: "A red square, described by a vision model." });
 	});
 
 	test("uses the direct tool presentation when nested in Code Mode", () => {

@@ -1,3 +1,4 @@
+import { wireFunctionName } from "./tool-names.ts";
 import type { Api, Context, Model, Tool, Usage } from "@earendil-works/pi-ai";
 
 type ResponseInput = Record<string, unknown>[];
@@ -226,7 +227,7 @@ export function convertResponsesMessages<TApi extends Api>(
 									type: "function_call",
 									...(itemId ? { id: itemId } : {}),
 									call_id: callId,
-									name: block.name,
+									...wireFunctionName(block.name, canReplayNamespace ? block.namespace : undefined),
 									arguments: JSON.stringify(block.arguments),
 									...(canReplayNamespace && block.namespace !== undefined ? { namespace: block.namespace } : {}),
 								} as ResponseInput[number])
@@ -234,7 +235,7 @@ export function convertResponsesMessages<TApi extends Api>(
 									type: "custom_tool_call",
 									...(itemId ? { id: itemId } : {}),
 									call_id: callId,
-									name: block.name,
+									...wireFunctionName(block.name, canReplayNamespace ? block.namespace : undefined),
 									input: sanitizeSurrogates(getGrammarToolInput(block.name, block.arguments, customInputProperty)),
 									...(canReplayNamespace && block.namespace !== undefined ? { namespace: block.namespace } : {}),
 								} as ResponseInput[number]),

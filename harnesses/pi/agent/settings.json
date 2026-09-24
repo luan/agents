@@ -3,7 +3,7 @@
   "defaultProjectTrust": "always",
   "lastChangelogVersion": "0.85.1",
   "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-6-astra",
+  "defaultModel": "gpt-5.6-luna",
   "defaultThinkingLevel": "medium",
   "packages": [
     "packages/pi-libtui",
@@ -15,6 +15,8 @@
     "packages/pi-xsettings",
     "packages/pi-subagents",
     "packages/pi-developer-messages",
+    "packages/pi-context-windows",
+    "packages/pi-conversation",
     "packages/pi-codex-native",
     "packages/pi-skills",
     "packages/pi-code-mode",
@@ -28,7 +30,10 @@
     {
       "source": "npm:@plannotator/pi-extension",
       "skills": []
-    }
+    },
+    "packages/pi-imagegen",
+    "packages/pi-notebook",
+    "packages/pi-voice"
   ],
   "compaction": {
     "enabled": true,
@@ -49,7 +54,16 @@
     "codeBlockIndent": "  ",
     "mermaid": "streaming"
   },
-  "defaultTools": [],
+  "defaultTools": [
+    "new_context",
+    "request_user_input_async",
+    "send_message_to_user_async",
+    "clock__sleep",
+    "clock__curr_time",
+    "image_gen__imagegen",
+    "notebook__exec",
+    "notebook__control"
+  ],
   "showHardwareCursor": false,
   "branchSummary": {
     "skipPrompt": false
@@ -64,6 +78,11 @@
     "openai/gpt-6-astra",
     "openai-codex/gpt-5.6-sol",
     "openai-codex/gpt-5.6-luna",
-    "openai-codex/gpt-5.6-terra"
-  ]
+    "openai-codex/gpt-5.6-terra",
+    "openai-codex/gpt-6-astra"
+  ],
+  "hideThinkingBlock": false,
+  "retry": {
+    "maxRetries": 5
+  }
 }

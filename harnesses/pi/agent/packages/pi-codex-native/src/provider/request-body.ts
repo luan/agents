@@ -91,11 +91,14 @@ export function buildRequestBody<TApi extends Api>(
 	}
 
 	if (toolPlacement.immediate.length > 0) {
-		body.tools = convertResponsesTools(toolPlacement.immediate, {
-			strict: null,
-			supportsStrictMode,
-			supportsOpenAIGrammarTools,
-		});
+		body.tools = clockNamespace(
+			convertResponsesTools(toolPlacement.immediate, {
+				// The backend otherwise treats optional properties as required. Codex also sends false.
+				strict: false,
+				supportsStrictMode,
+				supportsOpenAIGrammarTools,
+			}),
+		);
 	}
 
 	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
@@ -132,4 +135,37 @@ function buildClientMetadata(
 			"x-codex-turn-metadata": JSON.stringify(turnMetadata),
 		},
 	};
+}
+
+function clockNamespace(tools: ReturnType<typeof convertResponsesTools>): ReturnType<typeof convertResponsesTools> {
+	const clocks: ReturnType<typeof convertResponsesTools> = [];
+	const result = tools.filter((tool) => {
+		if (tool.type !== "function" || (tool.name !== "clock__sleep" && tool.name !== "clock__curr_time")) return true;
+		clocks.push({
+			...tool,
+			name: tool.name.slice(7),
+			strict: false,
+			...(tool.name === "clock__curr_time"
+				? {
+						output_schema: {
+							type: "object",
+							properties: {
+								current_time: { type: "string", description: "Current UTC time formatted as YYYY-MM-DD HH:MM:SS UTC." },
+							},
+							required: ["current_time"],
+							additionalProperties: false,
+						},
+					}
+				: {}),
+		});
+		return false;
+	});
+	if (clocks.length)
+		result.push({
+			type: "namespace",
+			name: "clock",
+			description: "Tools for reading and waiting on time.",
+			tools: clocks,
+		});
+	return result;
 }

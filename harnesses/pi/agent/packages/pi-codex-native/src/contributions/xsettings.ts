@@ -23,6 +23,129 @@ export function codexContextWindowLabel(preset: ContextWindowPreset): string {
 }
 
 const definitions = {
+	portableCompaction: {
+		category: "behavior",
+		type: "boolean",
+		default: false,
+		apply: "live",
+		label: "Portable compaction summary",
+		description:
+			"Generate a readable Pi summary beside each encrypted Codex checkpoint for provider switching. Adds a summarization request.",
+	},
+	lunaReserve: {
+		label: "Luna Reserve",
+		description:
+			"After quota exhaustion, switch only when the backend authorizes Reserve. Wait for your next input; restore the original model when ordinary quota returns.",
+		category: "behavior",
+		type: "boolean",
+		default: true,
+		apply: "live",
+	},
+	autoReasoning: {
+		label: "Auto reasoning (Astra)",
+		description:
+			"Let Astra adjust effort by work phase, never below your starting level; restore it when the run ends.",
+		category: "tools",
+		type: "boolean",
+		default: false,
+		apply: "live",
+	},
+	reasoningMode: {
+		scope: "session",
+		apply: "live",
+		label: "Reasoning mode (this session)",
+		description: "Use Pi's selected thinking level, or Codex Persistent reasoning with its follow-up instructions.",
+		category: "behavior",
+		type: "enum",
+		default: "pi",
+		options: [
+			{ value: "pi", label: "Use Pi thinking level", description: "Keep the session's normal reasoning effort." },
+			{
+				value: "persistent",
+				label: "Persistent",
+				description: "Codex Persistent reasoning; async tools remain independent.",
+			},
+		],
+	},
+	currentTimeReminder: {
+		apply: "live",
+		label: "Current time reminders",
+		description: "Supply the current UTC time to Codex. Auto enables reminders with Persistent reasoning.",
+		category: "behavior",
+		type: "enum",
+		default: "auto",
+		options: [
+			{ value: "auto", label: "Auto", description: "Use Codex Persistent defaults." },
+			{ value: "on", label: "On", description: "Include time independently of reasoning mode." },
+			{ value: "off", label: "Off", description: "Disable reminders, including in Persistent mode." },
+		],
+	},
+	currentTimeReminderIntervalSeconds: {
+		label: "Time reminder interval (seconds)",
+		description:
+			"Non-negative integer seconds between reminders. Zero supplies a reminder before every eligible inference.",
+		category: "behavior",
+		type: "string",
+		default: "1",
+		apply: "live",
+	},
+	currentTimeReminderDelivery: {
+		label: "Time reminder delivery",
+		description: "Choose which inference boundaries can receive a reminder; a new context always receives one.",
+		category: "behavior",
+		type: "enum",
+		default: "any_inference",
+		apply: "live",
+		options: [
+			{ value: "any_inference", label: "Any inference", description: "Deliver whenever the interval is due." },
+			{
+				value: "after_user_or_tool_output",
+				label: "After user or tool output",
+				description: "Require new user input or tool output.",
+			},
+		],
+	},
+	currentTimeReminderSleep: {
+		label: "Sleep with time reminders",
+		description: "Auto enables sleep with Persistent defaults. On and Off explicitly override it.",
+		category: "behavior",
+		type: "enum",
+		default: "auto",
+		apply: "live",
+		options: [
+			{ value: "auto", label: "Auto", description: "Use Codex defaults." },
+			{ value: "on", label: "On", description: "Expose sleep with reminders." },
+			{ value: "off", label: "Off", description: "Do not expose sleep through reminders." },
+		],
+	},
+	sleepTool: {
+		label: "Sleep tool",
+		description: "Enable the interruptible sleep feature independently of Persistent.",
+		category: "tools",
+		type: "boolean",
+		default: true,
+		apply: "live",
+	},
+	sleepToolMode: {
+		label: "Sleep tool availability",
+		description: "Use model and reminder settings, or expose sleep on every model.",
+		category: "tools",
+		type: "enum",
+		default: "model_driven",
+		apply: "live",
+		options: [
+			{ value: "model_driven", label: "Model driven", description: "Use the model catalog and reminder settings." },
+			{ value: "always_on", label: "Always on", description: "Expose sleep whenever its feature is enabled." },
+		],
+	},
+	sendMessageToUserAsync: {
+		label: "Async messages",
+		description: "Enable async user messages even when the model catalog does not advertise them. Root agents only.",
+		category: "tools",
+		type: "boolean",
+		default: false,
+		apply: "live",
+	},
 	cacheDiagnostics: {
 		label: "Cache diagnostics",
 		description: "Show Codex cache status or also write private diagnostic logs.",

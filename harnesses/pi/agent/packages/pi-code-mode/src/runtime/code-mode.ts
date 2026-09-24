@@ -48,7 +48,7 @@ export class CodeModeRuntime {
 		return this.liftedToolNames
 			.flatMap((name) => {
 				const adapter = adapters.get(name);
-				return adapter && metadata.has(name) ? [adapter] : [];
+				return adapter && adapter.isActive?.() !== false && metadata.has(name) ? [adapter] : [];
 			})
 			.map((adapter) => {
 				const tool = metadata.get(adapter.name);

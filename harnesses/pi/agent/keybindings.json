@@ -71,5 +71,7 @@
   "panels.tuicr.open": ["ctrl+shift+g"],
   "panels.zoom": ["alt+shift+z"],
   "processes.open": ["alt+s"],
-  "codex.fast.toggle": ["alt+g"]
+  "codex.fast.toggle": ["alt+g"],
+  "codex.usage.open": ["alt+u"],
+  "voice.open": ["alt+v"]
 }

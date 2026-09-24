@@ -11,6 +11,7 @@ pi.markdown.mermaid = "streaming"
 pi.showHardwareCursor = false
 pi.editorPaddingX = 0
 pi.outputPad = 1
+pi.hideThinkingBlock = false
 pi-libtui.iconPack = "nerd-fonts"
 pi-libtui.powerline = true
 pi-libtui.softCursor = false
@@ -49,18 +50,28 @@ pi.compaction.enabled = true
 pi.compaction.reserveTokens = 16384
 pi.compaction.keepRecentTokens = 20000
 pi.branchSummary.skipPrompt = false
-pi.enabledModels = [ "anthropic/claude-fable-5-1", "openai-codex/gpt-5.6-sol", "openai-codex/gpt-5.6-luna", "openai-codex/gpt-5.6-terra", "openai-codex/gpt-6-astra" ]
+pi.enabledModels = [ "anthropic/claude-fable-5-1", "openai/gpt-6-astra", "openai-codex/gpt-5.6-sol", "openai-codex/gpt-5.6-luna", "openai-codex/gpt-5.6-terra", "openai-codex/gpt-6-astra" ]
+pi.retry.maxRetries = 5
 pi-codex-native.cacheDiagnostics = "off"
 pi-codex-native.fallbackCompaction = false
 pi-codex-native.contextWindowPreset = "balanced"
+pi-codex-native.portableCompaction = true
 pi-subagents.maxConcurrency = "4"
+pi-context-windows.archiveMode = "local"
+pi-context-windows.hybrid = true
+pi-voice.v3Voice = "sol"
 
 [interaction]
 pi.steeringMode = "one-at-a-time"
 
 [tools]
-pi.defaultTools = []
+pi-codex-native.sendMessageToUserAsync = true
+pi-codex-native.autoReasoning = true
+pi-codex-native.sleepTool = true
+pi-codex-native.sleepToolMode = "always_on"
+pi.defaultTools = [ "new_context", "request_user_input_async", "send_message_to_user_async", "clock__sleep", "clock__curr_time", "image_gen__imagegen", "notebook__exec", "notebook__control" ]
 pi-skills.catalogVisibility = "when-active"
-pi-code-mode.tools = [ "skill", "web__run", "exec_command", "write_stdin", "tool_search", "apply_patch", "view_image" ]
+pi-code-mode.tools = [ "skill", "web__run", "exec_command", "write_stdin", "tool_search", "apply_patch", "view_image", "get_context_remaining", "history__list_windows", "history__list_items", "history__read_item", "history__search_contents", "notes__list_files_by_prefix", "notes__read_file", "notes__search_contents", "notes__append_to_file", "notes__write_file" ]
 pi-code-mode.defaultOutputTokens = 10000
+pi-code-mode.enabled = true
 pi-tool-search.tools = []

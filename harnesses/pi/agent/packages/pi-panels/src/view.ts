@@ -178,7 +178,7 @@ export class SidePanelView extends VStack implements Focusable {
 	}
 
 	onMouse(event: TuiMouseEvent): boolean {
-		if (event.row === 0 && this.header) return this.header.onMouse(event);
+		if (event.row === 0 && this.header) return event.type === "wheel" || this.header.onMouse(event);
 		return this.body?.onMouse?.({ ...event, row: event.row - 1 }) === true;
 	}
 

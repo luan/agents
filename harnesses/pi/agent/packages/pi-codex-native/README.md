@@ -69,6 +69,54 @@ Use a model explicitly when needed:
 pi --model openai-codex/gpt-5.6-luna
 ```
 
+## Persistent mode
+
+Choose **Reasoning mode (this session) → Persistent** in Codex Native settings.
+Astra delivers answers while continuing useful authorized follow-up, including
+waiting for results. **Use Pi thinking level** restores ordinary operation.
+The selection applies immediately and is saved with the session, including forks
+and resume. Other sessions keep their own selection.
+
+The provider uses Astra's catalog instructions, Codex's fallback for other models,
+and the `disabled` API effort value for Persistent. Instruction changes and UTC
+reminders are recorded with the session and replayed at their original boundaries.
+Pi continues to own execution, cancellation, and session history.
+
+**Current time reminders** defaults to **Auto**, which enables them with Persistent.
+**On** enables reminders independently; **Off** stops new reminders. Set the interval
+in whole seconds; **0** allows a reminder before every eligible inference. Delivery
+can be **Any inference** or **After user or tool output**. New context windows receive
+an initial reminder regardless of the interval.
+
+Async questions, messages, and clock tools are supplied by `pi-conversation`.
+Their availability follows the model catalog and Codex Native's tool settings.
+
+## Astra effort changes
+
+Astra keeps the original reasoning effort in the request and receives native
+`configuration_update` items when effort changes. The provider records those
+boundaries in the Pi session, including after resume. Successful compaction
+establishes a new effort baseline.
+
+Enable **Auto reasoning** to expose `change_reasoning` to Astra in ordinary
+reasoning mode. It can request low, medium, or high effort, with your starting
+level as the floor. The extension restores the starting level when work ends;
+a later manual change takes precedence. The tool is unavailable in Persistent
+mode and on other models, including through Code Mode.
+
+## Usage and Reserve
+
+Press **Alt+U** in the managed harness to open the usage overlay with remaining
+allowances, reset times, and available reset
+credits. Refresh reads account state without spending a credit.
+**Redeem one credit** requires confirmation for that redemption and uses a
+durable request ID so an uncertain response can be retried safely.
+
+Reserve handling follows backend authorization and account identity. It does
+not silently turn a quota failure into a retry or redeem a credit. Requests
+using the Reserve model retain their own identity instead of changing the
+normal Luna model.
+
 ## Fast mode
 
 Fast mode sends Codex priority routing (`service_tier: "priority"` plus the
@@ -95,10 +143,11 @@ moves up a tier instead of compacting until `max` is reached.
 
 ## Keybindings
 
-The package registers two actions:
+The package registers these actions:
 
 | Action | Effect |
 | --- | --- |
+| `codex.usage.open` | Open allowances and reset credits. |
 | `codex.fast.toggle` | Toggle fast mode for the current session. |
 | `codex.context.cycle` | Move to the next context preset (wraps after `max`). |
 
@@ -152,13 +201,25 @@ compaction, prompt-envelope/response handling, diagnostics tied to native
 transport, and `web__run` are intentionally not registered for compatible
 providers because they use separate Codex services or wire protocols.
 
-Settings use namespace `pi-codex-native` (label "Codex Native"), all in the
-`behavior` category. Edit them with `/xsettings` when `pi-xsettings`
+Settings use namespace `pi-codex-native` (label "Codex Native"), in the
+`behavior` and `tools` categories. `reasoningMode` is stored in the current
+session. Edit them with `/xsettings` when `pi-xsettings`
 is installed; otherwise the defaults apply.
 
 | Key | Default | Values |
 | --- | --- | --- |
+| `reasoningMode` | `pi` | `pi`, `persistent` |
+| `currentTimeReminder` | `auto` | `auto`, `on`, `off` |
+| `currentTimeReminderIntervalSeconds` | `"1"` | Whole seconds as a decimal string, from `0` through `18446744073709551615` |
+| `currentTimeReminderDelivery` | `any_inference` | `any_inference`, `after_user_or_tool_output` |
+| `currentTimeReminderSleep` | `auto` | `auto`, `on`, `off` |
+| `sleepTool` | `true` | boolean |
+| `sleepToolMode` | `model_driven` | `model_driven`, `always_on` |
+| `sendMessageToUserAsync` | `false` | boolean |
 | `cacheDiagnostics` | `off` | `off`, `status`, `status-and-log` |
+| `lunaReserve` | `true` | boolean; backend-authorized fallback after a quota error |
+| `autoReasoning` | `false` | boolean; Astra only |
+| `portableCompaction` | `false` | boolean; readable summary alongside native compaction |
 | `fallbackCompaction` | `true` | boolean |
 | `fastModeDefault` | `false` | boolean |
 | `contextWindowPreset` | `balanced` | `smart`, `balanced`, `enhanced`, `large`, `max` |
@@ -173,6 +234,10 @@ is installed; otherwise the defaults apply.
   (custom `/compact` guidance is ignored with a warning). When remote
   compaction fails, `true` lets Pi compact locally, including the last remote
   checkpoint; `false` cancels compaction with an error notice.
+- `portableCompaction`: generates a readable summary alongside a native
+  encrypted checkpoint, allowing Pi to carry context when switching providers.
+  It applies when native compaction owns the window; Context Windows supplies
+  its own generated-summary option when installed.
 - `textVerbosity`: sets `text.verbosity` on each provider request.
 
 ## `web__run`
@@ -228,3 +293,17 @@ from `PI_CODEX_BASE_URL` or the default Codex backend.
 Source: https://github.com/luan/agents, directory
 harnesses/pi/agent/packages/pi-codex-native. Run `bun run typecheck` and
 `bun test test` in that directory.
+
+## Recoverable context windows
+
+When `pi-context-windows` is installed, the optional `pi-context/window/v1` capability
+owns compaction and model-visible window projection. This provider resets its
+transport continuation when the window changes and skips stale checkpoint
+replay. It provides `pi-context/checkpoint/v1` for hybrid rollover: Context Windows
+stores the generated encrypted checkpoint with its notes and readable summary;
+this provider validates and replays only that window’s checkpoint. Endpoint
+mismatches or checkpoint failures preserve the outgoing context and report an error. Normal tool requests are checked for the current window marker before
+sending. Branch-summary requests keep their independent request context.
+Without the capability, native remote compaction retains its existing behavior.
+
+See [conversation and context recovery](../../../../../docs/pi-context-and-conversation.md).

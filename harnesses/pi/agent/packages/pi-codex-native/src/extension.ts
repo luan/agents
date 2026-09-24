@@ -1,3 +1,6 @@
+import { registerQuotaManagement } from "./quota/extension.ts";
+import { registerAutoReasoning } from "./tools/change-reasoning/definition.ts";
+import { registerModelToolPolicy } from "./contributions/model-tool-policy.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerCodeModeFunctionTool } from "@luan.sh/pi-code-mode/sdk";
 import registerNativeCompaction from "./compaction/index.ts";
@@ -66,6 +69,9 @@ export function registerCodexNativeLifecycle(
 
 export default function codexNativeExtension(pi: ExtensionAPI): void {
 	const unregisterPromptPayloadAdapter = registerCodexPromptPayloadAdapter();
+	const unregisterModelToolPolicy = registerModelToolPolicy(pi);
+	registerAutoReasoning(pi);
+	registerQuotaManagement(pi);
 	const webRunTool = createWebRunTool();
 	const unregisterCodeModeWebRun = registerCodeModeFunctionTool(webRunTool);
 	const runtime = registerOpenAICodexProvider(pi);
@@ -101,6 +107,7 @@ export default function codexNativeExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", (event) => {
 		if (event.reason !== "reload" && event.reason !== "quit") return;
 		unregisterPromptPayloadAdapter();
+		unregisterModelToolPolicy();
 		unregisterCodeModeWebRun();
 		fastMode.dispose();
 		contextWindow.dispose();

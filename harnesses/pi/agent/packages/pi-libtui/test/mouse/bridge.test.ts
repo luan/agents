@@ -25,6 +25,7 @@ import {
 	type TuiMouseEvent,
 } from "../../src/mouse.ts";
 import { ensureSelectionRegistry, type NativeSelectionCompleted } from "../../src/selection.ts";
+import { ToolActivity } from "../../src/tool/activity.ts";
 import { ToolDisclosureAction } from "../../src/tool/disclosure-action.ts";
 import { ToolOutput } from "../../src/tool/output.ts";
 import { ToolViewRegion } from "../../src/tool/view-region.ts";
@@ -1298,5 +1299,108 @@ describe("mouse bridge", () => {
 		secondDispose();
 		expect(prototype.beforeTerminalStart).toBe(original);
 		expect(tui.terminal.writes.at(-1)).toBe("\x1b[?1003l");
+	});
+});
+
+describe("expanded transcript scrolling", () => {
+	function activity(label: string, height: number, payload?: Component, expanded = true) {
+		return new ToolActivity({
+			theme,
+			maxHeight: height,
+			requestRender() {},
+			view: {
+				action: { verb: label, status: "succeeded", marker: false },
+				mode: expanded ? "full" : "preview",
+				payload: {
+					kind: "component",
+					preview: new LinesComponent([]),
+					full: payload ?? new LinesComponent(Array.from({ length: 60 }, (_, i) => `${label}-${i}`)),
+				},
+			},
+		});
+	}
+	function frame(tui: TestTui, component: Component, width = 30) {
+		const lines = component.render(width);
+		tui.currentLayout = { root: box(component, [], 0, 0, width, lines.length) };
+		return lines.map((line) => Bun.stripANSI(line).trimEnd());
+	}
+
+	test("Page Up/Down scroll the output after opening its header", () => {
+		const tool = activity("output", 6, undefined, false);
+		const tui = createTui();
+		const dispose = installMouseBridge(asTui(tui), registry());
+		try {
+			frame(tui, tool);
+			input(tui, "\x1b[<0;2;1M");
+			input(tui, "\x1b[<0;2;1m");
+			expect(frame(tui, tool)[1]).toContain("output-0");
+			expect(input(tui, "\x1b[6~")?.consume).toBe(true);
+			expect(frame(tui, tool)[1]).toContain("output-4");
+			expect(input(tui, "\x1b[5~")?.consume).toBe(true);
+			expect(frame(tui, tool)[1]).toContain("output-0");
+		} finally {
+			dispose();
+			tool.dispose();
+		}
+	});
+
+	test("scrollbar drags reach both ends without selecting text, and release restores selection", () => {
+		const tool = activity("output", 6);
+		const tui = createTui();
+		const dispose = installMouseBridge(asTui(tui), registry());
+		try {
+			frame(tui, tool);
+			expect(input(tui, "\x1b[<0;30;2M")?.consume).toBe(true);
+			frame(tui, tool);
+			expect(input(tui, "\x1b[<32;40;20M")?.consume).toBe(true);
+			expect(frame(tui, tool)[5]).toContain("output-59");
+			input(tui, "\x1b[<32;40;1M");
+			expect(frame(tui, tool)[1]).toContain("output-0");
+			input(tui, "\x1b[<0;40;1m");
+			expect(tui.nativeInputs).toEqual([]);
+			frame(tui, tool);
+			const selection = ["\x1b[<0;2;3M", "\x1b[<32;8;3M", "\x1b[<0;8;3m"];
+			for (const event of selection) input(tui, event);
+			expect(tui.nativeInputs).toEqual(selection);
+		} finally {
+			dispose();
+			tool.dispose();
+		}
+	});
+
+	test("nested scrolling targets the visible child after the enclosing viewport scrolls", () => {
+		const child = activity("inner", 5, undefined, false);
+		const body = new ComponentStack([
+			new LinesComponent(["before-0", "before-1", "before-2"]),
+			child,
+			new LinesComponent(Array.from({ length: 20 }, (_, i) => `after-${i}`)),
+		]);
+		const outer = activity("outer", 9, body);
+		const tui = createTui();
+		const dispose = installMouseBridge(asTui(tui), registry());
+		try {
+			frame(tui, outer);
+			// Scroll the outer viewport so the child header moves to the first body row.
+			input(tui, "\x1b[<65;30;2M");
+			expect(frame(tui, outer)[1]).toContain("inner");
+			input(tui, "\x1b[<0;2;2M");
+			input(tui, "\x1b[<0;2;2m");
+			expect(frame(tui, outer)[2]).toContain("inner-0");
+			input(tui, "\x1b[6~");
+			expect(frame(tui, outer)[2]).toContain("inner-3");
+			// Inner scrollbar is two columns left of the enclosing scrollbar.
+			input(tui, "\x1b[<0;28;3M");
+			input(tui, "\x1b[<32;28;6M");
+			const dragged = frame(tui, outer);
+			expect(dragged[1]).toContain("inner");
+			expect(dragged[5]).toContain("inner-59");
+			input(tui, "\x1b[<0;28;6m");
+			frame(tui, outer);
+			input(tui, "\x1b[<64;3;4M");
+			expect(frame(tui, outer)[2]).toContain("inner-53");
+		} finally {
+			dispose();
+			outer.dispose();
+		}
 	});
 });

@@ -37,11 +37,17 @@ and content. In the sidebar, arrows or `j`/`k` move and Enter opens the
 highlighted destination. In the content, `h`/`l` or left/right change pages,
 Enter edits the selected setting, and Backspace restores its default.
 
-Every confirmed edit is written to `xsettings.toml` immediately. Settings
+Global edits are written to `xsettings.toml` immediately. Settings marked **this
+session** are saved in the active session branch and restored on resume; they do
+not change other sessions or the global file. Settings
 marked live (the theme and all `@luan.sh/pi-libtui` settings) apply to the running TUI
 at once. Other settings need a reload: when the editor was opened from
 `/xsettings`, Pi reloads after you close it; otherwise it tells you to run
 `/reload`.
+
+The mouse wheel scrolls the column under the pointer: the category sidebar or
+the settings content. Reaching either end keeps scrolling inside Settings; it
+does not move the conversation behind the pane.
 
 ## `xsettings.toml`
 
@@ -148,7 +154,11 @@ configured for that action ID. Other extensions' READMEs list their action IDs.
 
 ## SDK for extension authors
 
-Import the UI-free SDK, not the extension entry point:
+Import the UI-free SDK, not the extension entry point. Declare `scope: "session"`
+and `apply: "live"` for a setting saved with the current session. Read those values
+with `settings.get(ctx.sessionManager.getSessionId())`; `get()` returns global
+values and compiled defaults.
+
 
 ```ts
 import { createSettings } from "@luan.sh/pi-xsettings/sdk";

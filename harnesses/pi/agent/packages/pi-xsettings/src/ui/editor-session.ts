@@ -1,9 +1,9 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { KeyId, TUI } from "@earendil-works/pi-tui";
 import type { DialogHost } from "@luan.sh/pi-libtui";
-import type { SettingsEdit, SettingsSyncResult } from "../config/pi-settings-sync.ts";
 import { piSettingDefinitions } from "../config/pi-settings.ts";
-import { setPath, type SettingsRecord } from "../config/store.ts";
+import type { SettingsEdit, SettingsSyncResult } from "../config/pi-settings-sync.ts";
+import { type SettingsRecord, setPath } from "../config/store.ts";
 import type { SettingRegistration, SettingValue, XSettingsRegistry } from "../protocol/settings.ts";
 import { applyLiveTheme, applySavedSettings } from "../runtime/apply.ts";
 import { resolveRegistrationValues } from "../runtime/settings.ts";
@@ -37,7 +37,10 @@ export class XSettingsEditorSession {
 			(value): value is SettingRegistration => value !== undefined,
 		);
 		const registrationValues = new Map(
-			registrations.map((registration) => [registration.namespace, resolveRegistrationValues(registration, document)]),
+			registrations.map((registration) => [
+				registration.namespace,
+				resolveRegistrationValues(registration, document, true),
+			]),
 		);
 		const fields = [
 			...piDefinitions.map((definition) => toUiField(document, undefined, definition)),
@@ -62,7 +65,12 @@ export class XSettingsEditorSession {
 		tui: TUI,
 		theme: Theme,
 		onClose: () => void,
-		options: { readonly heightOffset: number; readonly dialogHost?: DialogHost; readonly sidebarToggleKey?: KeyId },
+		options: {
+			readonly heightOffset: number;
+			readonly dialogHost?: DialogHost;
+			readonly sidebarToggleKey?: KeyId;
+			readonly requestRender: () => void;
+		},
 	): XSettingsScreen {
 		return new XSettingsScreen(
 			this.fields,
@@ -99,7 +107,7 @@ export class XSettingsEditorSession {
 			this.modelOptions,
 			undefined,
 			options.dialogHost,
-			() => tui.requestRender(),
+			options.requestRender,
 			options.sidebarToggleKey,
 			(id, value) => this.preview(id, value),
 		);
@@ -138,6 +146,12 @@ export class XSettingsEditorSession {
 		const namespace = definition.storagePath[1];
 		const registration = namespace ? this.registry.registrations[namespace] : undefined;
 		if (!registration) return;
+		if (
+			registration.definitions.some(
+				(item) => item.scope === "session" && item.key === definition.storagePath.slice(2).join("."),
+			)
+		)
+			return;
 		const previewDocument = structuredClone(this.document);
 		setPath(previewDocument, definition.storagePath, storedValue);
 		void this.registry.publish(namespace, resolveRegistrationValues(registration, previewDocument));

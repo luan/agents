@@ -1,20 +1,65 @@
 {
-	"files": [],
-	"references": [
-		{ "path": "harnesses/pi/agent/packages/pi-fileops" },
-		{ "path": "harnesses/pi/agent/packages/pi-code-mode" },
-		{ "path": "harnesses/pi/agent/packages/pi-codex-native" },
-		{ "path": "harnesses/pi/agent/packages/pi-copy-mode" },
-		{ "path": "harnesses/pi/agent/packages/pi-developer-messages" },
-		{ "path": "harnesses/pi/agent/packages/pi-exec-command" },
-		{ "path": "harnesses/pi/agent/packages/pi-libactions" },
-		{ "path": "harnesses/pi/agent/packages/pi-libtui" },
-		{ "path": "harnesses/pi/agent/packages/pi-skills" },
-		{ "path": "harnesses/pi/agent/packages/pi-thinking-binding" },
-		{ "path": "harnesses/pi/agent/packages/pi-tool-search" },
-		{ "path": "harnesses/pi/agent/packages/pi-collapse-transcript" },
-		{ "path": "harnesses/pi/agent/packages/pi-view-image" },
-		{ "path": "harnesses/pi/agent/packages/pi-xsettings" },
-		{ "path": "site" }
-	]
+  "files": [],
+  "references": [
+    {
+      "path": "harnesses/pi/agent/packages/pi-context-windows"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-conversation"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-fileops"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-code-mode"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-codex-native"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-copy-mode"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-developer-messages"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-exec-command"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-libactions"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-libtui"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-skills"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-thinking-binding"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-tool-search"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-collapse-transcript"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-view-image"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-xsettings"
+    },
+    {
+      "path": "site"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-imagegen"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-notebook"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-voice"
+    }
+  ]
 }

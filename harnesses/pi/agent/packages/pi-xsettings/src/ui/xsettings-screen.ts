@@ -17,6 +17,7 @@ import {
 	icon,
 	keyHintGlyph,
 	offsetDialogHost,
+	SelectableList,
 	SemanticInput,
 	type TuiIconName,
 	tuiTheme,
@@ -141,10 +142,7 @@ class PageColumns implements Component {
 	private _focused = false;
 	private bodyOffset = 0;
 	private renderedWidth = 0;
-	private sidebarStart = 0;
-	private sidebarVisibleCount = 0;
-	private hoverIndex: number | undefined;
-	private pressedIndex: number | undefined;
+	private readonly sidebar: SelectableList<SidebarEntry>;
 
 	constructor(
 		private readonly theme: Theme,
@@ -153,14 +151,44 @@ class PageColumns implements Component {
 		private readonly selectedEntry: () => number,
 		private readonly activeEntry: () => number,
 		private readonly sidebarFocused: () => boolean,
-		private readonly onSelect: (entry: SidebarEntry) => void,
+		onSelect: (entry: SidebarEntry) => void,
 		private readonly search: SidebarSearch,
 		private readonly searchActive: () => boolean,
 		private readonly onSearchFocus: () => void,
 		private readonly sidebarHint: (width: number) => string,
 		private readonly contentHint: (width: number) => string,
-		private readonly requestRender: () => void,
-	) {}
+		requestRender: () => void,
+	) {
+		this.sidebar = new SelectableList({
+			items: entries(),
+			selectedIndex: selectedEntry(),
+			renderItem: (entry, context) => {
+				const colors = tuiTheme(this.theme);
+				const selected = this.sidebarFocused() && context.selected;
+				const current = !this.searchActive() && context.index === this.activeEntry();
+				const marker = current ? `${icon("selection")} ` : "  ";
+				const label = entry.kind === "section" ? ` ${marker}${entry.section ?? ""}` : pageLabel(entry.page);
+				const subcategoryText = colors.mixForeground(
+					colors.color("text.secondary"),
+					colors.color("text.primary"),
+					0.55,
+				);
+				const styled =
+					selected || (entry.kind === "page" && entry.page.id === this.activePage())
+						? this.theme.bold(colors.fg("accent", label))
+						: colors.fg(entry.kind === "section" ? subcategoryText : "text.primary", label);
+				const clipped = truncateToWidth(styled, context.width, "");
+				const padded = clipped + " ".repeat(Math.max(0, context.width - visibleWidth(clipped)));
+				return current
+					? colors.bg("surface.selected", padded)
+					: selected || context.hovered
+						? colors.bg("surface.hover", padded)
+						: padded;
+			},
+			requestRender,
+			onActivate: (entry) => onSelect(entry),
+		});
+	}
 
 	get focused(): boolean {
 		return this._focused;
@@ -193,6 +221,7 @@ class PageColumns implements Component {
 
 	invalidate(): void {
 		this.editor.invalidate();
+		this.sidebar.invalidate();
 	}
 
 	render(width: number): string[] {
@@ -214,12 +243,10 @@ class PageColumns implements Component {
 		const bodyWidth = Math.max(1, this.renderedWidth - this.bodyOffset);
 		const body = this.editor.render(bodyWidth);
 		const searchLines = this.search.render(sidebarWidth);
-		const visibleEntryCount = Math.max(1, body.length - searchLines.length);
-		this.sidebarVisibleCount = visibleEntryCount;
-		const maxStart = Math.max(0, entries.length - visibleEntryCount);
-		this.sidebarStart = Math.min(maxStart, Math.max(0, this.selectedEntry() - Math.max(0, visibleEntryCount - 1)));
-		const visibleEntries = entries.slice(this.sidebarStart, this.sidebarStart + visibleEntryCount);
-		const height = Math.max(body.length + 1, searchLines.length + visibleEntries.length + 1);
+		this.sidebar.setMaxVisible(Math.max(1, body.length - searchLines.length));
+		if (this.sidebar.getSelectedIndex() !== this.selectedEntry()) this.sidebar.setSelectedIndex(this.selectedEntry());
+		const entryLines = this.sidebar.render(sidebarWidth);
+		const height = Math.max(body.length + 1, searchLines.length + entryLines.length + 1);
 		const colors = tuiTheme(this.theme);
 		const focusedSurface = colors.mixForeground(colors.color("surface.inset"), colors.color("surface.selected"), 0.5);
 		const sidebarBackground = this.sidebarFocused() ? focusedSurface : colors.color("surface.inset");
@@ -227,42 +254,13 @@ class PageColumns implements Component {
 		const sidebarHintBackground = colors.mixForeground(sidebarBackground, colors.color("surface.selected"), 0.22);
 		const contentHintBackground = colors.mixForeground(contentBackground, colors.color("surface.selected"), 0.22);
 		const hintForeground = colors.mixForeground(colors.color("text.muted"), colors.color("text.secondary"), 0.6);
-		const subcategoryText = colors.mixForeground(colors.color("text.secondary"), colors.color("text.primary"), 0.55);
 		const hintRow = (text: string, rowWidth: number, background: typeof sidebarHintBackground): string => {
 			const clipped = truncateToWidth(colors.fg(hintForeground, text), rowWidth, "");
 			return colors.bg(background, clipped + " ".repeat(Math.max(0, rowWidth - visibleWidth(clipped))));
 		};
 		const sidebarRows = Array.from({ length: height }, (_, row) => {
 			if (row === height - 1) return hintRow(this.sidebarHint(sidebarWidth), sidebarWidth, sidebarHintBackground);
-			const entryIndex = this.sidebarStart + row - searchLines.length;
-			const entry = visibleEntries[row - searchLines.length];
-			const active = entry?.page.id === this.activePage();
-			const selected = this.sidebarFocused() && entryIndex === this.selectedEntry();
-			const current = !this.searchActive() && entryIndex === this.activeEntry();
-			const sidebarContent =
-				row < searchLines.length
-					? (searchLines[row] ?? "")
-					: entry
-						? (() => {
-								const marker = current ? `${icon("selection")} ` : "  ";
-								const label = entry.kind === "section" ? ` ${marker}${entry.section ?? ""}` : pageLabel(entry.page);
-								if (selected) return this.theme.bold(colors.fg("accent", label));
-								if (entry.kind === "section") {
-									return colors.fg(subcategoryText, label);
-								}
-								if (active) return this.theme.bold(colors.fg("accent", label));
-								return colors.fg("text.primary", label);
-							})()
-						: "";
-			const styled = sidebarContent;
-			const sidebar = truncateToWidth(styled, sidebarWidth, "");
-			const padded = sidebar + " ".repeat(Math.max(0, sidebarWidth - visibleWidth(sidebar)));
-			const painted = current
-				? colors.bg("surface.selected", padded)
-				: selected || this.hoverIndex === entryIndex
-					? colors.bg("surface.hover", padded)
-					: padded;
-			return painted;
+			return row < searchLines.length ? (searchLines[row] ?? "") : (entryLines[row - searchLines.length] ?? "");
 		});
 		const sidebar = new BackgroundSurface({
 			theme: this.theme,
@@ -291,49 +289,30 @@ class PageColumns implements Component {
 	}
 
 	onMouse(event: TuiMouseEvent): boolean {
+		const sidebarEvent = { ...event, row: event.row - 1 };
+		const contentEvent = { ...event, col: event.col - this.bodyOffset };
 		if (event.type === "leave") {
-			const changed = this.hoverIndex !== undefined || this.pressedIndex !== undefined;
-			this.hoverIndex = undefined;
-			this.pressedIndex = undefined;
-			this.editor.onMouse({ ...event, col: event.col - this.bodyOffset });
-			if (changed) this.requestRender();
+			this.sidebar.onMouse(sidebarEvent);
+			this.editor.onMouse(contentEvent);
 			return false;
 		}
 		if (event.type === "wheel") {
-			return this.editor.onMouse({ ...event, col: Math.max(0, event.col - this.bodyOffset) });
-		}
-		const entries = this.entries();
-		if (event.col < this.bodyOffset - 1 && event.row === 0) {
-			if (event.type === "press" && event.button === 0 && !this.editor.isEditing()) this.onSearchFocus();
+			if (event.col < 0 || event.col >= this.renderedWidth) return false;
+			if (event.col < this.bodyOffset) this.sidebar.onMouse(sidebarEvent);
+			else this.editor.onMouse(contentEvent);
+			// Padding and list boundaries still belong to Settings, not Pi's transcript.
 			return true;
 		}
-		const index =
-			event.col < this.bodyOffset - 1 &&
-			event.row >= 1 &&
-			event.row - 1 < Math.min(entries.length - this.sidebarStart, this.sidebarVisibleCount)
-				? event.row - 1
-				: -1;
-		if (index >= 0) {
-			const absoluteIndex = this.sidebarStart + index;
-			this.editor.onMouse({ ...event, type: "leave", col: event.col - this.bodyOffset });
-			if (this.hoverIndex !== absoluteIndex) {
-				this.hoverIndex = absoluteIndex;
-				this.requestRender();
+		if (event.col < this.bodyOffset - 1) {
+			this.editor.onMouse({ ...contentEvent, type: "leave" });
+			if (event.row === 0) {
+				if (event.type === "press" && event.button === 0 && !this.editor.isEditing()) this.onSearchFocus();
+				return true;
 			}
-			if (event.type === "press" && event.button === 0) this.pressedIndex = absoluteIndex;
-			if (event.type === "release" && event.button === 0) {
-				const pressed = this.pressedIndex;
-				this.pressedIndex = undefined;
-				const entry = entries[absoluteIndex];
-				if (pressed === absoluteIndex && entry) this.onSelect(entry);
-			}
-			return true;
+			return this.sidebar.onMouse(sidebarEvent);
 		}
-		if (this.hoverIndex !== undefined) {
-			this.hoverIndex = undefined;
-			this.requestRender();
-		}
-		return event.col >= this.bodyOffset ? this.editor.onMouse({ ...event, col: event.col - this.bodyOffset }) : false;
+		this.sidebar.onMouse({ ...sidebarEvent, type: "leave" });
+		return event.col >= this.bodyOffset ? this.editor.onMouse(contentEvent) : false;
 	}
 }
 

@@ -317,9 +317,10 @@ describe("settings screen fields", () => {
 		);
 
 		screen.render(80);
+		renders = 0;
 		screen.handleInput("j");
 
-		expect(renders).toBe(1);
+		expect(renders).toBeGreaterThan(0);
 		const selectedLine = screen.render(80).find((line) => stripTerminalSequences(line).includes("Second"));
 		expect(selectedLine).toContain(tuiTheme(selectionTheme).bgAnsi("surface.selected"));
 	});

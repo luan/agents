@@ -468,7 +468,7 @@ export class SettingsEditor extends ComponentStack {
 			selectedIndex: this.selectedIndex,
 			maxVisible: this.maxVisibleRows(),
 			renderItem: (field, context) => this.renderField(field, context),
-			requestRender() {},
+			requestRender,
 			onSelectionChange: (_field, index) => {
 				this.selectedIndex = index;
 			},
@@ -523,7 +523,6 @@ export class SettingsEditor extends ComponentStack {
 	}
 
 	render(width: number): string[] {
-		this.list.setSelectedIndex(this.selectedIndex);
 		this.list.setMaxVisible(Math.max(1, this.maxVisibleRows() - (this.parentLabel ? 2 : 0)));
 		const content = this.filtered.length > 0 ? this.list : this.emptyView;
 		const parentLabel = this.parentLabel;

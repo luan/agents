@@ -1,3 +1,4 @@
+import { imageSettings } from "./contributions/xsettings.ts";
 import { type ExtensionAPI, resizeImage } from "@earendil-works/pi-coding-agent";
 import { registerViewImageCodeModeAdapter } from "./code-mode-adapter.ts";
 import { ImageAttachmentStore } from "./core/attachments.ts";
@@ -10,6 +11,7 @@ import { installImageAttachmentSession } from "./runtime/editor-attachments.ts";
 import { configureViewImageToolForModel, createViewImageTool } from "./tools/view-image/definition.ts";
 
 export default function viewImageExtension(pi: ExtensionAPI): void {
+	const disposeSettings = imageSettings.register();
 	const tool = createViewImageTool();
 	const attachments = new ImageAttachmentStore();
 	const clampImages = createImageClamp(async (image) => {
@@ -52,6 +54,7 @@ export default function viewImageExtension(pi: ExtensionAPI): void {
 	});
 	const disposeCodeModeAdapter = registerViewImageCodeModeAdapter(tool);
 	pi.on("session_shutdown", (event) => {
+		disposeSettings();
 		removeImagePasteSession?.();
 		removeImagePasteSession = undefined;
 		attachments.clear();

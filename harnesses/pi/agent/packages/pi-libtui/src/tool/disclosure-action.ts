@@ -75,7 +75,7 @@ export class ToolDisclosureAction implements Component, TextInteractionTarget {
 	}
 
 	handleViewportInput(data: string): boolean {
-		return this.region.handleHeaderInput(data);
+		return this.region.handleHeaderInput(data) || this.region.handleViewportInput(data);
 	}
 
 	invalidate(): void {

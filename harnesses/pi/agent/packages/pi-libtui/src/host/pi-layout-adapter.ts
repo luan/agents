@@ -131,8 +131,12 @@ function structuralChildren(component: Component): readonly Component[] | undefi
 	const candidate = component as Component & {
 		children?: readonly Component[];
 		getChildren?: () => readonly Component[];
+		child?: PiPrivateValue;
+		handleMouse?: PiPrivateValue;
 	};
 	if (Array.isArray(candidate.children) && candidate.children.every(isComponent)) return candidate.children;
+	// Pi 0.85's MouseRegion wraps tool output in a private child instead of a Container.
+	if (typeof candidate.handleMouse === "function" && isComponent(candidate.child)) return [candidate.child];
 	// Shared stacks keep their children behind a method so replacement can preserve identity.
 	if (typeof candidate.getChildren !== "function") return undefined;
 	try {
@@ -149,6 +153,7 @@ function hasMouseHandler(component: Component): boolean {
 
 interface CachedStructuralSpan {
 	component: Component;
+	col?: number;
 	row: number;
 	height: number;
 	width: number;
@@ -179,7 +184,8 @@ function cachedStructuralSpans(component: Component): readonly CachedStructuralS
 			return [];
 		spans.push({
 			component: span.component,
-			row: Math.max(0, Math.floor(span.row)),
+			col: typeof span.col === "number" && Number.isFinite(span.col) ? Math.floor(span.col) : 0,
+			row: Math.floor(span.row),
 			height: Math.max(0, Math.floor(span.height)),
 			width: Math.max(0, Math.floor(span.width)),
 		});
@@ -204,7 +210,7 @@ export function derivedChildren(box: LayoutBox): readonly LayoutBox[] {
 	const existing = derivedLayoutChildren.get(box);
 	if (existing) return existing;
 	const component = isComponent(box.component) ? box.component : undefined;
-	if (!component || !hasMouseDescendant(component)) {
+	if (!component) {
 		derivedLayoutChildren.set(box, []);
 		return [];
 	}
@@ -212,7 +218,7 @@ export function derivedChildren(box: LayoutBox): readonly LayoutBox[] {
 	if (cached) {
 		const derived = cached.map((span) => {
 			const rect = {
-				x: box.rect.x,
+				x: box.rect.x + (span.col ?? 0),
 				y: box.rect.y + span.row,
 				width: Math.min(box.rect.width, span.width),
 				height: span.height,
@@ -222,6 +228,7 @@ export function derivedChildren(box: LayoutBox): readonly LayoutBox[] {
 		derivedLayoutChildren.set(box, derived);
 		return derived;
 	}
+	if (!hasMouseDescendant(component)) return [];
 	const childrenToMeasure = structuralChildren(component);
 	if (!childrenToMeasure) return [];
 	const children: LayoutBox[] = [];

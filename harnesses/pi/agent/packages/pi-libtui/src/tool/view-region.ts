@@ -230,6 +230,19 @@ export class ToolViewRegion implements Component, TextInteractionTarget, FoldTar
 		return this.focused;
 	}
 
+	/** Expose scrolled child geometry so the host can target nested controls directly. */
+	getSpans() {
+		if (!this.isExpanded()) return [];
+		return [
+			{
+				component: this.mode().component,
+				row: -this.expandedViewport.scrollOffset,
+				width: this.expandedViewport.contentWidth,
+				height: this.expandedViewport.contentHeight,
+			},
+		];
+	}
+
 	handleViewportInput(data: string): boolean {
 		if (this.focused && this.canExpand()) ensureFoldingRegistry().setCurrent(this);
 		const child = this.mode().component as Component & {
@@ -336,7 +349,7 @@ export class ToolViewRegion implements Component, TextInteractionTarget, FoldTar
 	}
 
 	onMouse(event: TuiMouseEvent): boolean {
-		if (this.modeIndex !== 0 && event.type === "wheel" && this.expandedViewport.onMouse(event)) return true;
+		if (this.modeIndex !== 0 && this.expandedViewport.onMouse(event)) return true;
 		if (event.type === "leave") {
 			const changed = this.hoveredTarget === "body" || this.pressed?.target === "body";
 			if (this.hoveredTarget === "body") this.hoveredTarget = undefined;
@@ -373,7 +386,7 @@ export class ToolViewRegion implements Component, TextInteractionTarget, FoldTar
 		}
 		if (event.type === "drag") {
 			if (this.pressed?.target === "body") this.pressed = undefined;
-			return false;
+			return this.dispatchToMode(event);
 		}
 		if (event.type === "release") {
 			const pressed = this.pressed;
@@ -391,6 +404,10 @@ export class ToolViewRegion implements Component, TextInteractionTarget, FoldTar
 			return activate || collapse || hit || this.dispatchToMode(event);
 		}
 		return this.dispatchToMode(event);
+	}
+
+	capturesPointer(): boolean {
+		return this.expandedViewport.capturesPointer();
 	}
 
 	render(width: number): string[] {

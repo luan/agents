@@ -55,10 +55,10 @@ Behaviour:
   `openai-codex` provider it requires the model's `compat.supportsImageDetailOriginal`
   flag; every other provider with image input gets it. When a model does not
   support it, a requested `original` silently falls back to `high`.
-- Any Pi model that declares `image` in its `input` capabilities can use the
-  tool. Other models get the error
-  `view_image is not allowed because the current model does not support image inputs`
-  before the file is read.
+- Models with image input receive the image. Text-only models receive a
+  description from the configured vision model, using a separate request with
+  the image and no main-session transport continuation. Disable Description
+  fallback to reject text-only callers instead.
 - The tool result contains one image content block. Its `details` record the
   input, the resolved path, MIME type, width, height, byte size, and duration in
   milliseconds.
@@ -73,7 +73,8 @@ base64 `data:` URL. Forward it with `image(result)` so the model sees the image:
 
 ```js
 const result = await tools.view_image({ path: "screenshots/current.png" });
-image(result);
+if ("description" in result) text(result.description);
+else image(result);
 ```
 
 ## Pasting image paths into the editor
@@ -122,9 +123,15 @@ then strips those blocks for the rest of the session.
 
 ## Configuration
 
-The package has no settings. The only configuration is the
-`PI_VIEW_IMAGE_BIN` environment variable described under Install. It
-registers no keybindings; pasting uses the editor's normal paste path.
+Settings use namespace `pi-view-image` in xsettings: **Describe images for text-only models**
+(`descriptionFallback`) defaults to true; **Image description model**
+(`descriptionModel`) defaults to `openai-codex/gpt-5.6-luna`. The selected model
+must support image input and be authenticated in Pi. Descriptions are bounded
+to 32,000 characters. The fallback applies to `view_image` calls; it does not
+convert every image pasted into a text-only conversation.
+
+`PI_VIEW_IMAGE_BIN` selects the native executable. The extension registers no
+keybindings; pasting uses the editor's normal paste path.
 
 ## Layout
 
@@ -134,6 +141,7 @@ registers no keybindings; pasting uses the editor's normal paste path.
 | Tool schema, aliases, model capability checks | `src/tools/view-image/definition.ts` |
 | Tool result and details shape | `src/tools/view-image/result.ts` |
 | Tool call and result rendering | `src/tools/view-image/presentation.ts` |
+| Text-only description request | `src/runtime/describe-image.ts` |
 | Native binary discovery and build | `src/native/binary.ts` |
 | Running the binary and parsing its JSON | `src/native/view-image.ts` |
 | Codex-style `<image>` labeling in the context hook | `src/native-attachments.ts` |

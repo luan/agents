@@ -70,6 +70,7 @@ export function registerCodeModeLifecycle(
 		pi.setActiveTools(activeBeforeLift.filter((name) => !liftedNames.has(name)));
 	});
 	pi.on("model_select", (event) => refreshDescription(event.model.provider));
+	pi.on("before_agent_start", (_event, ctx) => refreshDescription(ctx.model?.provider));
 
 	pi.on("tool_result", (event) => {
 		if (event.toolName !== "exec" && event.toolName !== "wait") return undefined;

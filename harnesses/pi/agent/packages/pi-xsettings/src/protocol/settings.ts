@@ -74,6 +74,7 @@ export interface ListDefinition {
 }
 
 interface SettingDefinitionBase {
+	scope?: "global" | "session";
 	key: string;
 	label: string;
 	description: string;
@@ -118,6 +119,7 @@ export interface XSettingsRegistry {
 	version: 1;
 	registrations: Record<string, SettingRegistration | undefined>;
 	values: Record<string, Readonly<Record<string, SettingValue>> | undefined>;
+	sessionValues?: Record<string, Record<string, Readonly<Record<string, SettingValue>>>>;
 	listeners: Array<(registration: SettingRegistration) => void>;
 	register(registration: SettingRegistration): () => void;
 	publish(namespace: string, values: Readonly<Record<string, SettingValue>>): Promise<void>;

@@ -8,29 +8,40 @@ type ViewImageTool = ReturnType<typeof createViewImageTool>;
 export function registerViewImageCodeModeAdapter(tool: ViewImageTool): () => void {
 	return registerCodeModeFunctionTool(tool, {
 		outputSchema: {
-			type: "object",
-			properties: {
-				image_url: { type: "string", description: "Data URL for the loaded image." },
-				detail: {
-					type: "string",
-					enum: ["high", "original"],
-					description:
-						"Image detail hint returned by view_image. Returns `high` for default resized behavior or `original` when original resolution is preserved.",
+			anyOf: [
+				{
+					type: "object",
+					properties: { image_url: { type: "string" }, detail: { type: "string", enum: ["high", "original"] } },
+					required: ["image_url", "detail"],
+					additionalProperties: false,
 				},
-			},
-			required: ["image_url", "detail"],
-			additionalProperties: false,
+				{
+					type: "object",
+					properties: { description: { type: "string" } },
+					required: ["description"],
+					additionalProperties: false,
+				},
+			],
 		},
 		resultValue: codeModeImageResult,
 	});
 }
 
-export function codeModeImageResult(result: AgentToolResult<CodeModeToolDetails>): {
-	image_url: string;
-	detail: "high" | "original";
-} {
+export function codeModeImageResult(result: AgentToolResult<CodeModeToolDetails>):
+	| {
+			image_url: string;
+			detail: "high" | "original";
+	  }
+	| { description: string } {
 	const image = result.content.find((item): item is ViewImageContent => item.type === "image");
-	if (!image) throw new Error("view_image returned no image content");
+	if (!image) {
+		const description = result.content
+			.filter((part) => part.type === "text")
+			.map((part) => part.text)
+			.join("\n");
+		if (description) return { description };
+		throw new Error("view_image returned no image or description");
+	}
 	return {
 		image_url: `data:${image.mimeType};base64,${image.data}`,
 		detail: image.detail,

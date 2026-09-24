@@ -65,6 +65,8 @@ export interface NestedToolPresentationContext {
 
 /** Execution bridge only. pi-code-mode settings own whether this tool is lifted out of Pi's direct tool set. */
 export interface NestedToolAdapter {
+	/** Optional session/model gate; execution must enforce it too. */
+	isActive?(): boolean;
 	name: string;
 	kind: NestedToolKind;
 	/** Stable capability whose Pi session owns this adapter. Omit only for process-global adapters. */

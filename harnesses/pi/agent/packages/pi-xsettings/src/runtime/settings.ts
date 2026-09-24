@@ -39,15 +39,22 @@ function isSettingValue(value: StoredSettingValue | undefined): value is Setting
 export function resolveRegistrationValues(
 	registration: SettingRegistration,
 	document: SettingsRecord,
+	includeSession = false,
 ): Record<string, SettingValue> {
 	const values: Record<string, SettingValue> = Object.create(null) as Record<string, SettingValue>;
 	for (const definition of registration.definitions) {
 		if (definition.type === "enum" && !Array.isArray(definition.options)) continue;
-		values[definition.key] = resolveSettingValue(definition, document, registration.namespace, values);
+		values[definition.key] =
+			definition.scope === "session" && !includeSession
+				? definition.default
+				: resolveSettingValue(definition, document, registration.namespace, values);
 	}
 	for (const definition of registration.definitions) {
 		if (definition.type !== "enum" || Array.isArray(definition.options)) continue;
-		values[definition.key] = resolveSettingValue(definition, document, registration.namespace, values);
+		values[definition.key] =
+			definition.scope === "session" && !includeSession
+				? definition.default
+				: resolveSettingValue(definition, document, registration.namespace, values);
 	}
 	return values;
 }

@@ -341,6 +341,12 @@ export function installMouseDispatch(tui: TUI, prototype: object, registry: Mous
 				break;
 			}
 			if (textTarget) {
+				if (textTarget.textInteraction?.capturesPointer?.()) {
+					state.capture = textTarget;
+					setKeyboardTarget(state, textTarget.textInteraction);
+					requestRender(this);
+					return { consume: true };
+				}
 				state.textClick = { target: textTarget, x: parsed.x, y: parsed.y, moved: false };
 				requestRender(this);
 				return Reflect.apply(original, this, [data]);

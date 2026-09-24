@@ -1,4 +1,6 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
+import { tuiTheme } from "@luan.sh/pi-libtui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { renderEditorCompositionStatus } from "@luan.sh/pi-libtui/editor";
 import { getCustomEditorSettings } from "../config/settings.ts";
@@ -44,10 +46,16 @@ class PiFooter implements Component {
 			width,
 			getThinkingLabel: this.getThinkingLabel,
 		});
-		return renderEditorCompositionStatus(this.theme, composition.style, status, width, {
+		const lines = renderEditorCompositionStatus(this.theme, composition.style, status, width, {
 			active: this.state.active,
 			elapsedMs: this.state.elapsed(),
 		});
+		const extensions = [...statuses]
+			.filter(([key]) => key !== CONTEXT_WINDOW_STATUS && key !== FAST_MODE_STATUS)
+			.map(([, text]) => text.replace(/[\r\n]+/gu, " "));
+		if (extensions.length)
+			lines.push(truncateToWidth(tuiTheme(this.theme).fg("text.primary", extensions.join(" · ")), width));
+		return lines;
 	}
 
 	invalidate(): void {

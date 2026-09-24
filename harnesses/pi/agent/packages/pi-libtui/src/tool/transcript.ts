@@ -87,6 +87,8 @@ export class ToolTranscript implements Component {
 class TranscriptBody implements Component, TextInteractionTarget, FoldTargetAtRow {
 	readonly [TEXT_INTERACTION_TARGET] = true as const;
 	private readonly gutter: string;
+	private width = 0;
+	private height = 0;
 
 	constructor(
 		private component: Component,
@@ -101,9 +103,14 @@ class TranscriptBody implements Component, TextInteractionTarget, FoldTargetAtRo
 
 	render(width: number): string[] {
 		const inner = Math.max(0, Math.floor(width) - this.indent);
-		if (this.indent === 0) return this.component.render(inner);
-		if (inner === 0) return [];
-		return this.component.render(inner).map((line) => `${this.gutter}${line}`);
+		this.width = inner;
+		const lines = inner === 0 ? [] : this.component.render(inner);
+		this.height = lines.length;
+		return this.indent === 0 ? lines : lines.map((line) => `${this.gutter}${line}`);
+	}
+
+	getSpans() {
+		return [{ component: this.component, row: 0, col: this.indent, width: this.width, height: this.height }];
 	}
 
 	invalidate(): void {

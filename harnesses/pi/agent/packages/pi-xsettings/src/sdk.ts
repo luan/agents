@@ -17,6 +17,7 @@ import { resolveSettingOptions } from "./runtime/options.ts";
 export type { ListDefinition, ListItemField, SettingPage } from "./protocol/settings.ts";
 
 interface DefinitionBase {
+	scope?: "global" | "session";
 	label: string;
 	description: string;
 	category: SettingCategory;
@@ -93,7 +94,7 @@ export type SettingsOf<Definitions extends Record<string, SettingDefinitionInput
 
 export interface SettingsClient<Definitions extends Record<string, SettingDefinitionInput>> {
 	readonly defaults: Readonly<SettingsOf<Definitions>>;
-	get(): SettingsOf<Definitions>;
+	get(sessionId?: string): SettingsOf<Definitions>;
 	register(onValues?: (settings: Readonly<SettingsOf<Definitions>>) => void | Promise<void>): () => void;
 }
 
@@ -115,7 +116,10 @@ export function createSettings<const Definitions extends Record<string, SettingD
 
 	return {
 		defaults,
-		get: () => cloneSettings(current),
+		get: (sessionId) => {
+			const scoped = sessionId ? ensureXSettingsRegistry().sessionValues?.[sessionId]?.[options.namespace] : undefined;
+			return scoped ? resolveValues(options.definitions, { ...current, ...scoped }) : cloneSettings(current);
+		},
 		register(onValues) {
 			const unregister = ensureXSettingsRegistry().register({
 				namespace: options.namespace,

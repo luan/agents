@@ -272,7 +272,7 @@ export class ToolActivity implements Component {
 		if (width <= 0 || (payload?.kind !== "text" && payload?.kind !== "terminal")) return;
 		const shouldExpand = hasMoreText(payload.text, previewRowsFor(this.options, 6), width);
 		if (this.region.isExpanded() || shouldExpand === this.region.canExpand()) return;
-		this.updateRegionModes(this.region.getMode(), shouldExpand);
+		this.updateRegionModes(this.view.mode ?? this.region.getMode(), shouldExpand);
 	}
 
 	private ensureDiffDisclosure(width: number): void {
@@ -301,11 +301,12 @@ export class ToolActivity implements Component {
 		this.diffDisclosureWidth = width;
 		if (shouldExpand === this.diffDisclosure) return;
 		this.diffDisclosure = shouldExpand;
-		this.updateRegionModes(this.region.getMode());
+		this.updateRegionModes(this.view.mode ?? this.region.getMode());
 	}
 
 	private updateRegionModes(mode?: string, forceTextDisclosure = false): void {
 		this.region.updateModes(this.regionModes(forceTextDisclosure), mode);
+		this.setOutputRows(this.region.getMode());
 	}
 
 	private regionModes(forceTextDisclosure = false) {

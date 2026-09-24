@@ -66,12 +66,11 @@ function renderToolAction(theme: Theme, view: ToolActionView, width: number, act
 	const markerValue = view.marker === false ? "" : actionField(view.marker ?? status.glyph, width);
 	const marker = markerValue ? `${colors.fg(view.markerTone ?? status.tone, markerValue)} ` : "";
 	const activityIndicator = activity?.marker ? `${activity.marker} ` : "";
-	const verb = activity?.text ?? colors.fg("text.secondary", actionField(view.verb, width));
+	// Default text follows the surrounding surface in both compact and expanded rows.
+	const verb = activity?.text ?? actionField(view.verb, width);
 	let line = `${activityIndicator}${marker}${theme.bold(verb)}`;
-	if (view.detail)
-		line += `${colors.fg("text.muted", " · ")}${colors.fg("text.secondary", actionField(view.detail, width))}`;
-	if (view.meta?.length)
-		line += `${colors.fg("text.muted", " · ")}${colors.fg("text.muted", view.meta.map((value) => actionField(value, width)).join(" · "))}`;
+	if (view.detail) line += ` · ${actionField(view.detail, width)}`;
+	if (view.meta?.length) line += ` · ${view.meta.map((value) => actionField(value, width)).join(" · ")}`;
 	return truncateToWidth(line, Math.max(0, width), "…");
 }
 

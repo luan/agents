@@ -19,6 +19,13 @@ import { registerTuiSettings, tuiSettings } from "./config/tui-settings.ts";
 import { ensureXSettingsRegistry } from "./protocol/settings.ts";
 import { attachActionShortcuts } from "./runtime/actions.ts";
 import { registerEffortActions } from "./runtime/effort.ts";
+import {
+	isSessionSetting,
+	publishSessionSettings,
+	SESSION_SETTING_ENTRY,
+	sessionSettingRecord,
+	sessionSettingsDocument,
+} from "./runtime/session-settings.ts";
 import { publishAllSettings, resolveRegistrationValues } from "./runtime/settings.ts";
 import { watchSettings } from "./runtime/settings-watch.ts";
 import { XSettingsEditorSession } from "./ui/editor-session.ts";
@@ -68,15 +75,24 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 		if (!message) lastNotified = undefined;
 	}
 
-	async function reconcile(edit?: SettingsEdit): Promise<SettingsSyncResult> {
-		const result = await sync.reconcile(edit);
+	async function reconcile(edit?: SettingsEdit, context = syncContext): Promise<SettingsSyncResult> {
+		const sessionEdit = edit && isSessionSetting(registry, edit.path);
+		if (sessionEdit) {
+			if (!context || context.sessionManager.getSessionId() !== syncContext?.sessionManager.getSessionId())
+				throw new Error("Settings session changed before the edit was saved");
+			pi.appendEntry(SESSION_SETTING_ENTRY, sessionSettingRecord(edit));
+		}
+		const result = await sync.reconcile(sessionEdit ? undefined : edit);
 		await publishAllSettings(registry, result.document);
 		reportSync(
 			result.conflicts.length > 0
 				? `Settings conflict: ${result.conflicts.join(", ")}. Both files were preserved for these settings. Choose a value in /xsettings or make both files agree.`
 				: undefined,
 		);
-		return result;
+		if (!context) return result;
+		const document = sessionSettingsDocument(registry, result.document, context.sessionManager.getBranch());
+		publishSessionSettings(registry, context.sessionManager.getSessionId(), document);
+		return { ...result, document };
 	}
 
 	async function initialize(): Promise<void> {
@@ -99,6 +115,12 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 		const pending = initialization.then(async () => {
 			const document = await store.load();
 			await registry.publish(registration.namespace, resolveRegistrationValues(registration, document));
+			if (syncContext)
+				publishSessionSettings(
+					registry,
+					syncContext.sessionManager.getSessionId(),
+					sessionSettingsDocument(registry, document, syncContext.sessionManager.getBranch()),
+				);
 		});
 		pendingRegistrations.add(pending);
 		void pending.catch(() => undefined);
@@ -128,7 +150,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 				panel.show({ focus: true });
 				return;
 			}
-			panelEditor = await XSettingsEditorSession.create(pi, ctx, reconcile, registry);
+			panelEditor = await XSettingsEditorSession.create(pi, ctx, (edit) => reconcile(edit, ctx), registry);
 			panelTabOpen = true;
 			panel.addTab(
 				{
@@ -138,6 +160,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 					create: (host, theme) => {
 						const screen = panelEditor!.createScreen(host.tui, theme, closePanelEditor, {
 							heightOffset: 1,
+							requestRender: () => host.requestRender(),
 							sidebarToggleKey,
 						});
 						activeScreen = screen;
@@ -149,7 +172,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 			);
 			return;
 		}
-		const editor = await XSettingsEditorSession.create(pi, ctx, reconcile, registry);
+		const editor = await XSettingsEditorSession.create(pi, ctx, (edit) => reconcile(edit, ctx), registry);
 		await ctx.ui.custom<void>(
 			(tui, theme, _keybindings, done) => {
 				const dialogs = new DialogOverlayHost(tui, theme);
@@ -160,6 +183,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 				};
 				const screen = editor.createScreen(tui, theme, close, {
 					heightOffset: 2,
+					requestRender: () => tui.requestRender(),
 					dialogHost: offsetDialogHost(dialogs, { row: 1, col: 1 }),
 					sidebarToggleKey,
 				});
@@ -205,6 +229,9 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("session_start", async (_event, ctx) => {
 		syncContext = ctx;
+		await initialization;
+		await settleRegistrations();
+		await reconcile();
 		reportSync(syncNotice);
 		if (ctx.mode !== "tui" || !ctx.hasUI) return;
 		panelContext = ctx;
@@ -256,7 +283,12 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 			);
 		}
 	});
+	pi.on("before_agent_start", async (_event, ctx) => {
+		const document = sessionSettingsDocument(registry, await store.load(), ctx.sessionManager.getBranch());
+		publishSessionSettings(registry, ctx.sessionManager.getSessionId(), document);
+	});
 	pi.on("session_shutdown", async (event, context) => {
+		if (registry.sessionValues) delete registry.sessionValues[context.sessionManager.getSessionId()];
 		if (
 			syncContext?.sessionManager === context.sessionManager &&
 			(event.reason === "reload" || event.reason === "quit")

@@ -4,6 +4,8 @@ import { type Component, stripTerminalSequences, visibleWidth } from "@earendil-
 import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE } from "../src/appearance.ts";
 import { BackgroundSurface, halfBlockSurfaceEdge } from "../src/background-surface.ts";
 import { tuiTheme } from "../src/color/theme.ts";
+import { rgb } from "../src/color/palette.ts";
+import { terminalColorsRegistry } from "../src/terminal-colors.ts";
 import { icon } from "../src/decoration/glyphs.ts";
 import { ProgressBar, progressFrame } from "../src/decoration/status.ts";
 import { parseUnifiedDiff, UnifiedDiffView } from "../src/diff/index.ts";
@@ -43,7 +45,39 @@ describe("progress", () => {
 });
 
 describe("tool transcript grammar", () => {
-	afterEach(() => configureTuiAppearance(DEFAULT_TUI_APPEARANCE));
+	afterEach(() => {
+		configureTuiAppearance(DEFAULT_TUI_APPEARANCE);
+		terminalColorsRegistry().publish(undefined);
+	});
+
+	test.each([
+		{ background: 24, terminalText: 0, contrast: 255 },
+		{ background: 240, terminalText: 255, contrast: 0 },
+	])(
+		"painted surfaces keep default text readable on an opposite terminal ($background)",
+		({ background, terminalText, contrast }) => {
+			terminalColorsRegistry().publish({
+				defaultForeground: rgb(terminalText, terminalText, terminalText),
+				indexedPalette: "custom",
+				scheme: terminalText === 0 ? "light" : "dark",
+			});
+			const surface = new BackgroundSurface({
+				theme: {
+					...theme,
+					getFgAnsi: () => "\x1b[39m",
+					getBgAnsi: () => `\x1b[48;2;${background};${background};${background}m`,
+				} as never as Theme,
+				component: component("plain \x1b[38;2;255;80;80mred\x1b[39m default \x1b[0m reset"),
+			});
+			const line = surface.render(40)[0]!;
+			const foreground = `\x1b[38;2;${contrast};${contrast};${contrast}m`;
+			expect(line).toContain(`${foreground}plain`);
+			expect(line).toContain("\x1b[38;2;255;80;80mred");
+			expect(line).toContain(`${foreground} default`);
+			expect(line).toContain(`${foreground} reset`);
+			expect(line).toEndWith("\x1b[49m\x1b[39m");
+		},
+	);
 
 	test("resolves failed and warning lifecycle markers through the active icon pack", () => {
 		for (const iconPack of ["nerd-fonts", "unicode", "emoji"] as const) {
@@ -821,6 +855,23 @@ describe("tool transcript grammar", () => {
 		const expanded = stripTerminalSequences(activity.render(8).join("\n"));
 		expect(expanded.replace(/\s/gu, "")).toContain("averylonglinethatwraps");
 		expect(expanded).not.toContain("rows omitted");
+		activity.dispose();
+	});
+
+	test("honors initial expansion when text wraps past the preview", () => {
+		const activity = new ToolActivity({
+			theme,
+			previewRows: 2,
+			requestRender() {},
+			view: {
+				action: { verb: "Read", status: "succeeded", marker: false },
+				mode: "full",
+				payload: { kind: "text", text: "a very long line that wraps", revision: 1 },
+			},
+		});
+		const rendered = stripTerminalSequences(activity.render(8).join("\n"));
+		expect(rendered.replace(/\s/gu, "")).toContain("averylonglinethatwraps");
+		expect(rendered).not.toContain("rows omitted");
 		activity.dispose();
 	});
 
