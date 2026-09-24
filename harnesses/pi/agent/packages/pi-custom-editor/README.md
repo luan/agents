@@ -35,7 +35,8 @@ without it the defaults apply and there is no in-app way to change them.
 - Replaces the footer through Pi's `setFooter` with a status row driven by the
   same composition settings.
 - Reads Pi's git branch, session name, model, provider, thinking level,
-  context-window usage, and per-session token/cost totals for status segments.
+  context-window usage, per-session token/cost totals, and extension
+  `setStatus` entries for status segments.
 - Hides Pi's native "working" transcript row only when `workingPlacement` is
   set to something other than `transcript`; the original visibility is restored
   on session shutdown.
@@ -57,12 +58,16 @@ Any of these can be placed, in order, in each quadrant when
 `segmentSource` is `custom`:
 
 `provider`, `model`, `thinking`, `fast`, `path`, `git`, `session`, `elapsed`,
-`context`, `context-window`, `context-qualifier`, `tokens`, `cost`, `clock`.
+`context`, `context-window`, `context-qualifier`, `tokens`, `cost`, `statuses`,
+`clock`.
 
 Segments that have nothing to show (no branch, thinking off, zero cost) are
 omitted. `context` renders a gauge with percent used, tokens/window, and the
-session's input/output totals and cost. The `working` segment is not chosen
-directly; it is inserted by `workingPlacement`.
+session's input/output totals and cost. `statuses` renders every extension's
+`ctx.ui.setStatus(key, text)` entry, sorted by key like Pi's built-in footer,
+so any extension can contribute to a quadrant without depending on this
+package. Every preset places it right after `context`. The `working` segment
+is not chosen directly; it is inserted by `workingPlacement`.
 
 ### Editor highlights
 

@@ -1,3 +1,7 @@
+/** Pi `setStatus` keys this package already renders through its own segments. */
+export const CONTEXT_WINDOW_STATUS = "codex-native-context";
+export const FAST_MODE_STATUS = "codex-native-fast";
+
 export interface WorkingSnapshot {
 	active: boolean;
 	startedAtMs?: number;
@@ -14,6 +18,8 @@ export class TuiState {
 	contextStatus: string | undefined;
 	fastMode = false;
 	revision = 0;
+	/** Live Pi extension statuses; the footer wires this to Pi's footer data. */
+	readStatuses: () => ReadonlyMap<string, string> = () => new Map();
 
 	reset(): void {
 		this.active = false;

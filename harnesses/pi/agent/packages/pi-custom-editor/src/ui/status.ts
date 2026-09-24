@@ -8,7 +8,7 @@ import {
 	editorStatusSeparator,
 } from "@luan.sh/pi-libtui/editor";
 import type { StatusSegmentId } from "../core/composition.ts";
-import { formatDuration, type TuiState } from "../runtime/state.ts";
+import { CONTEXT_WINDOW_STATUS, FAST_MODE_STATUS, formatDuration, type TuiState } from "../runtime/state.ts";
 
 export type Usage = { input: number; output: number; cost: number };
 
@@ -111,6 +111,21 @@ function cwdLabel(cwd: string): string {
 	return cwd || basename(cwd);
 }
 
+/** Pi extension statuses in Pi's own footer order: sorted by key, one line each. */
+function extensionStatuses(statuses: ReadonlyMap<string, string>, separator: string): string {
+	return [...statuses]
+		.filter(([key]) => key !== CONTEXT_WINDOW_STATUS && key !== FAST_MODE_STATUS)
+		.sort(([left], [right]) => left.localeCompare(right))
+		.map(([, text]) =>
+			text
+				.replace(/[\r\n\t]/gu, " ")
+				.replace(/ +/gu, " ")
+				.trim(),
+		)
+		.filter(Boolean)
+		.join(separator);
+}
+
 export interface StatusRenderOptions {
 	readonly ctx: ExtensionContext;
 	readonly state: TuiState;
@@ -132,6 +147,7 @@ export function renderStatusGroups(options: StatusRenderOptions): EditorComposit
 	const model = ctx.model?.name ?? "no-model";
 	const provider = ctx.model?.provider ?? "";
 	const thinking = options.getThinkingLabel?.();
+	const separator = colors.fg("text.muted", editorStatusSeparator(options.separator));
 	const segment = (id: StatusSegmentId): string => {
 		switch (id) {
 			case "provider":
@@ -164,11 +180,12 @@ export function renderStatusGroups(options: StatusRenderOptions): EditorComposit
 					: "";
 			case "cost":
 				return usage.cost ? colors.fg("positive", `$${usage.cost.toFixed(2)}`) : "";
+			case "statuses":
+				return extensionStatuses(state.readStatuses(), separator);
 			case "clock":
 				return colors.fg("text.muted", new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
 		}
 	};
-	const separator = colors.fg("text.muted", editorStatusSeparator(options.separator));
 	const render = (ids: readonly StatusSegmentId[]) => ids.map(segment).filter(Boolean).join(separator);
 	return { left: render(options.left), right: render(options.right) };
 }

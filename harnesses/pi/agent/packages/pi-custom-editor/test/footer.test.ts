@@ -59,6 +59,33 @@ describe("custom editor footer", () => {
 		expect(reads).toBe(2);
 	});
 
+	test("renders Pi extension statuses in their configured slot", () => {
+		const ctx = {
+			cwd: "/tmp",
+			model: { name: "test", provider: "test" },
+			getContextUsage: () => undefined,
+			sessionManager: { getEntries: () => [], getSessionName: () => undefined, getSessionId: () => "session" },
+		} as never as ExtensionContext;
+		const state = new TuiState();
+		let statuses = new Map([
+			["zeta", "Mollie\n80.0%"],
+			["codex-native-context", "Balanced (272k)"],
+			["codex-native-fast", "fast"],
+			["alpha", "COPY MODE"],
+		]);
+		state.readStatuses = () => statuses;
+		const render = (left: "statuses"[], right: ("context" | "statuses")[]) => {
+			const groups = renderStatusGroups({ ctx, state, theme, left, right, separator: "dot", width: 80 });
+			return { left: stripTerminalSequences(groups.left ?? ""), right: stripTerminalSequences(groups.right ?? "") };
+		};
+
+		expect(render([], ["context", "statuses"])).toEqual({ left: "", right: "ctx no model · COPY MODE · Mollie 80.0%" });
+		expect(render(["statuses"], ["context"]).left).toBe("COPY MODE · Mollie 80.0%");
+
+		statuses = new Map();
+		expect(render([], ["context", "statuses"]).right).toBe("ctx no model");
+	});
+
 	test("keeps low nonzero context usage visibly colored by its window preset", () => {
 		const ctx = {
 			getContextUsage: () => ({ tokens: 8_000, contextWindow: 272_000, percent: 2.8 }),

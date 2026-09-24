@@ -301,7 +301,7 @@ const definitions = {
 		description: "Choose and order segments in the bottom-right quadrant.",
 		type: "multi-enum",
 		ordered: true,
-		default: ["context"],
+		default: ["context", "statuses"],
 		options: STATUS_SEGMENTS.filter((value) => value !== "working").map((value) =>
 			option(value, value.replaceAll("-", " "), `Show ${value.replaceAll("-", " ")}.`),
 		),

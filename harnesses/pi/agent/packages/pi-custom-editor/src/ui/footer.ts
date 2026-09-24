@@ -3,17 +3,15 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import { renderEditorCompositionStatus } from "@luan.sh/pi-libtui/editor";
 import { getCustomEditorSettings } from "../config/settings.ts";
 import { resolveEditorComposition } from "../core/composition.ts";
-import type { TuiState } from "../runtime/state.ts";
+import { CONTEXT_WINDOW_STATUS, FAST_MODE_STATUS, type TuiState } from "../runtime/state.ts";
 import { renderStatusGroups } from "./status.ts";
 
 type FooterFactory = Parameters<ExtensionContext["ui"]["setFooter"]>[0];
 type FooterData = Parameters<NonNullable<FooterFactory>>[2];
 
-const CONTEXT_WINDOW_STATUS = "codex-native-context";
-const FAST_MODE_STATUS = "codex-native-fast";
-
 class PiFooter implements Component {
 	private readonly removeBranchListener: () => void;
+	private readonly readStatuses: () => ReadonlyMap<string, string>;
 
 	constructor(
 		private readonly tui: TUI,
@@ -24,6 +22,8 @@ class PiFooter implements Component {
 		private readonly getThinkingLabel?: () => string | undefined,
 	) {
 		this.updateBranch();
+		this.readStatuses = () => data.getExtensionStatuses();
+		state.readStatuses = this.readStatuses;
 		this.removeBranchListener = data.onBranchChange(() => {
 			this.updateBranch();
 			tui.requestRender();
@@ -56,6 +56,7 @@ class PiFooter implements Component {
 
 	dispose(): void {
 		this.removeBranchListener();
+		if (this.state.readStatuses === this.readStatuses) this.state.readStatuses = () => new Map();
 	}
 
 	private updateBranch(): void {

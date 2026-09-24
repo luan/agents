@@ -36,6 +36,7 @@ export const STATUS_SEGMENTS = [
 	"context-qualifier",
 	"tokens",
 	"cost",
+	"statuses",
 	"clock",
 ] as const;
 export type StatusSegmentId = (typeof STATUS_SEGMENTS)[number];
@@ -126,7 +127,7 @@ const base: PresetDefinition = {
 	topLeftSegments: [],
 	topRightSegments: ["path", "git", "model", "thinking", "fast"],
 	bottomLeftSegments: [],
-	bottomRightSegments: ["context"],
+	bottomRightSegments: ["context", "statuses"],
 };
 
 export const EDITOR_PRESETS: Readonly<Record<CustomEditorPreset, PresetDefinition>> = {
@@ -140,7 +141,7 @@ export const EDITOR_PRESETS: Readonly<Record<CustomEditorPreset, PresetDefinitio
 		promptMarker: ["❯"],
 		promptMarkerMotion: "static",
 		bottomStatus: false,
-		topLeftSegments: ["path", "git", "context"],
+		topLeftSegments: ["path", "git", "context", "statuses"],
 		topRightSegments: ["session", "context-window", "clock"],
 		bottomLeftSegments: [],
 		bottomRightSegments: [],
@@ -157,7 +158,7 @@ export const EDITOR_PRESETS: Readonly<Record<CustomEditorPreset, PresetDefinitio
 		topLeftSegments: [],
 		topRightSegments: [],
 		bottomLeftSegments: ["provider", "model", "path", "git", "session"],
-		bottomRightSegments: ["context"],
+		bottomRightSegments: ["context", "statuses"],
 	},
 	borderless: {
 		...base,
@@ -184,7 +185,7 @@ export const EDITOR_PRESETS: Readonly<Record<CustomEditorPreset, PresetDefinitio
 		promptMarkerMotion: "static",
 		bottomStatus: false,
 		topLeftSegments: ["path", "git"],
-		topRightSegments: ["context", "context-window", "clock"],
+		topRightSegments: ["context", "statuses", "context-window", "clock"],
 		bottomLeftSegments: [],
 		bottomRightSegments: [],
 	},
@@ -201,7 +202,7 @@ export const EDITOR_PRESETS: Readonly<Record<CustomEditorPreset, PresetDefinitio
 		promptMarkerMotion: "static",
 		bottomStatus: false,
 		topLeftSegments: ["provider", "model", "path", "git", "session"],
-		topRightSegments: ["context", "context-window"],
+		topRightSegments: ["context", "statuses", "context-window"],
 		bottomLeftSegments: [],
 		bottomRightSegments: [],
 		statusSeparator: "powerline",
@@ -292,6 +293,7 @@ export function candidatePreview(
 		"context-qualifier": "balanced",
 		tokens: "↑8K ↓2K",
 		cost: "$0.42",
+		statuses: "2 processes",
 		clock: "9:28",
 	};
 	const group = (segments: readonly StatusSegmentId[]) =>

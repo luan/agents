@@ -32,7 +32,7 @@ describe("custom editor compositions", () => {
 			top: "rule",
 			bottom: "rule",
 			bottomStatus: false,
-			topLeftSegments: ["path", "git", "context"],
+			topLeftSegments: ["path", "git", "context", "statuses"],
 		});
 		expect(EDITOR_PRESETS.pi).toMatchObject({ top: "rule", bottom: "rule", bottomStatus: true });
 		expect(EDITOR_PRESETS.borderless).toMatchObject({
