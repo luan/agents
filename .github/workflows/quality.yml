@@ -41,9 +41,11 @@ jobs:
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
+        # No cache-on-failure: a failed run can save v8's finished build script without the
+        # rusty_v8 archive (rust-cache prunes target/*/gn_out), so the next build cannot link v8.
+        # Bump the key to evict a cache saved that way.
         with:
-          shared-key: linux-pi
-          cache-on-failure: true
+          shared-key: linux-pi-v2
 
       - name: Install JavaScript dependencies
         run: bun install --frozen-lockfile
@@ -113,9 +115,9 @@ jobs:
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
+        # See the linux-pi cache note.
         with:
-          shared-key: linux-validation
-          cache-on-failure: true
+          shared-key: linux-validation-v2
 
       - name: Run clippy
         run: cargo clippy --locked --all-targets -- -D warnings -A clippy::large_futures
