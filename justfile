@@ -90,13 +90,13 @@ pi-install-check package:
     tar -xzf "$archive" -C "$check_root/unpacked"; \
     packaged="$check_root/unpacked/package"; \
     mkdir -p "$check_root/external"; \
-    bun -e 'import { resolve } from "node:path"; const packaged=process.argv[1]; const destination=process.argv[2]; const manifest=await Bun.file(resolve(packaged,"package.json")).json(); const dependencies=Object.fromEntries(Object.entries(manifest.dependencies ?? {}).filter(([,specification])=>typeof specification === "string" && !specification.startsWith("file:") && !specification.startsWith("workspace:"))); await Bun.write(resolve(destination,"package.json"),`${JSON.stringify({private:true,dependencies},null,2)}\n`);' "$packaged" "$check_root/external"; \
+    bun -e 'import { resolve } from "node:path"; const packaged=process.argv[1]; const destination=process.argv[2]; const manifest=await Bun.file(resolve(packaged,"package.json")).json(); const peers=(manifest.pi?.extensions?.length ?? 0) === 0 ? manifest.peerDependencies ?? {} : {}; const dependencies=Object.fromEntries(Object.entries({...peers,...(manifest.dependencies ?? {})}).filter(([,specification])=>typeof specification === "string" && !specification.startsWith("file:") && !specification.startsWith("workspace:"))); await Bun.write(resolve(destination,"package.json"),`${JSON.stringify({private:true,dependencies},null,2)}\n`);' "$packaged" "$check_root/external"; \
     cd "$check_root/external"; \
     npm install --ignore-scripts --package-lock=false --omit=dev --no-audit --no-fund; \
     if test -d node_modules; then mkdir -p "$packaged/node_modules"; cp -R node_modules/. "$packaged/node_modules/"; fi; \
     expected="$(bun -e 'import { resolve } from "node:path"; const manifest=await Bun.file(resolve(process.argv[1],"package.json")).json(); console.log(manifest.pi?.extensions?.length ?? 0);' "$packaged")"; \
     if test "$expected" -eq 0; then \
-        bun -e 'import { resolve } from "node:path"; import { pathToFileURL } from "node:url"; const root=process.argv[1]; const manifest=await Bun.file(resolve(root,"package.json")).json(); const targets=Object.values(manifest.exports ?? {}).filter((target)=>typeof target === "string"); if(targets.length === 0) throw new Error("library package has no public exports"); for(const target of targets) await import(pathToFileURL(resolve(root,target)).href); console.log(`Loaded ${targets.length} packaged library exports.`);' "$packaged"; \
+        bun --no-install -e 'import { resolve } from "node:path"; import { pathToFileURL } from "node:url"; const root=process.argv[1]; const manifest=await Bun.file(resolve(root,"package.json")).json(); const targets=Object.values(manifest.exports ?? {}).filter((target)=>typeof target === "string"); if(targets.length === 0) throw new Error("library package has no public exports"); for(const target of targets) await import(pathToFileURL(resolve(root,target)).href); console.log(`Loaded ${targets.length} packaged library exports.`);' "$packaged"; \
     else \
         agent_dir="$check_root/agent"; \
         PI_CODING_AGENT_DIR="$agent_dir" pi install "$packaged"; \
