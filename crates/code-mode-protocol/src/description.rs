@@ -637,15 +637,13 @@ fn render_json_schema_object_property(name: &str, value: &JsonValue, required: &
 }
 
 fn render_json_schema_object(map: &serde_json::Map<String, JsonValue>) -> String {
-    let required = map
+    let required: Vec<&str> = map
         .get("required")
         .and_then(JsonValue::as_array)
-        .map_or_default(|items| {
-            items
-                .iter()
-                .filter_map(JsonValue::as_str)
-                .collect::<Vec<_>>()
-        });
+        .into_iter()
+        .flatten()
+        .filter_map(JsonValue::as_str)
+        .collect();
     let properties = map
         .get("properties")
         .and_then(JsonValue::as_object)

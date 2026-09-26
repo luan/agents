@@ -124,3 +124,10 @@ jobs:
 
       - name: Run tests with nextest
         run: cargo nextest run --locked
+
+      # Pi packages build native binaries with `cargo install --git`, which uses the
+      # user's default toolchain rather than rust-toolchain.toml.
+      - name: Check stable toolchain build
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo +stable check --locked --workspace

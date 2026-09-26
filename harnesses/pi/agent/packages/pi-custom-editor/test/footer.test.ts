@@ -3,7 +3,7 @@ import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE, tuiTheme } from "@luan.sh/pi-libtui";
 import { TuiState } from "../src/runtime/state.ts";
-import { contextStatus, workingStatus } from "../src/ui/footer.ts";
+import { contextStatus, createFooter, workingStatus } from "../src/ui/footer.ts";
 import { renderStatusGroups } from "../src/ui/status.ts";
 
 const theme = {
@@ -84,6 +84,24 @@ describe("custom editor footer", () => {
 
 		statuses = new Map();
 		expect(render([], ["context", "statuses"]).right).toBe("ctx no model");
+	});
+
+	test("renders each Pi extension status once, through its segment", () => {
+		const ctx = {
+			cwd: "/tmp",
+			model: { name: "test", provider: "test" },
+			getContextUsage: () => undefined,
+			sessionManager: { getEntries: () => [], getSessionName: () => undefined, getSessionId: () => "session" },
+		} as never as ExtensionContext;
+		const data = {
+			getExtensionStatuses: () => new Map([["mollie", "Mollie 80.0%"]]),
+			getGitBranch: () => null,
+			onBranchChange: () => () => {},
+		} as never as Parameters<ReturnType<typeof createFooter>>[2];
+		const footer = createFooter(ctx, new TuiState())({ requestRender: () => {} } as never, theme, data);
+		const rendered = stripTerminalSequences(footer.render(120).join("\n"));
+
+		expect(rendered.split("Mollie 80.0%").length - 1).toBe(1);
 	});
 
 	test("keeps low nonzero context usage visibly colored by its window preset", () => {
