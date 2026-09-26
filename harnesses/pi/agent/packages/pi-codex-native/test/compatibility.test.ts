@@ -22,6 +22,21 @@ test("registrations are model-scoped and disposable", () => {
 	expect(codexCompatibility(luna)?.fastMode === true).toBe(false);
 });
 
+test("fast mode predicates resolve against each matched model ID", () => {
+	const unregister = registerCodexCompatibleProvider({
+		provider: "fast-mode-predicate",
+		model: (id) => id.startsWith("gpt-"),
+		fastMode: (modelId) => modelId.endsWith("-luna"),
+	});
+	const luna = { provider: "fast-mode-predicate", api: "test-api", id: "gpt-6-luna" } as never;
+	const sol = { provider: "fast-mode-predicate", api: "test-api", id: "gpt-6-sol" } as never;
+	expect(codexCompatibility(luna)?.features.fastMode).toBe(true);
+	expect(codexCompatibility(luna)?.fastMode).toBe(true);
+	expect(codexCompatibility(sol)?.features.fastMode).toBe(false);
+	expect(codexCompatibility(sol)?.fastMode).toBe(false);
+	unregister();
+});
+
 test("newer registrations take precedence and disposal is idempotent", () => {
 	const first = registerCodexCompatibleProvider({ provider: "litellm", model: "gpt-*", fastMode: false });
 	const second = registerCodexCompatibleProvider({

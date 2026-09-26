@@ -25,10 +25,11 @@ export type CodexCompatibleProviderOptions = {
 	/** API-specific pi-ai serializer overrides. Values for another API are ignored. */
 	compat?: Partial<OpenAICompletionsCompat> | Partial<OpenAIResponsesCompat>;
 	/** Backwards-compatible shorthand for the premium policy. */
-	fastMode?: boolean;
+	fastMode?: boolean | ((modelId: string) => boolean);
 };
 
-export type CodexCompatibleProvider = CodexCompatibleProviderOptions & {
+export type CodexCompatibleProvider = Omit<CodexCompatibleProviderOptions, "fastMode"> & {
+	fastMode?: boolean;
 	features: CodexCompatibleFeatures;
 };
 
@@ -82,7 +83,7 @@ function normalized(options: CodexCompatibleProviderOptions): Registration {
 		features: {
 			...ordinaryDefaults,
 			...options.features,
-			...(options.fastMode === undefined ? {} : { fastMode: options.fastMode }),
+			...(typeof options.fastMode === "boolean" ? { fastMode: options.fastMode } : {}),
 		},
 	};
 }
@@ -142,7 +143,11 @@ export function codexCompatibility(model: Model<Api> | undefined): CodexCompatib
 				apiSpecificity(b.registration) - apiSpecificity(a.registration) ||
 				a.index - b.index,
 		)[0];
-	return match?.registration ?? (matches(native, model) ? native : undefined);
+	const registration = match?.registration ?? (matches(native, model) ? native : undefined);
+	if (!registration) return undefined;
+	const fastMode =
+		typeof registration.fastMode === "function" ? registration.fastMode(model.id) : registration.features.fastMode;
+	return { ...registration, fastMode, features: { ...registration.features, fastMode } };
 }
 
 /** Return the model with the selected route's OpenAI compatibility metadata applied. */
