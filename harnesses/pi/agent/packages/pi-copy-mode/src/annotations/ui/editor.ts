@@ -38,13 +38,13 @@ export class AnnotationEditor extends SemanticEditor {
 
 	constructor(
 		tui: TUI,
-		semanticTheme: Theme,
+		private readonly annotationTheme: Theme,
 		private readonly appKeys: KeybindingsManager,
 		private readonly store: AnnotationStore,
 		private readonly onHover?: ComposerHoverListener,
 		private readonly onActivate?: ComposerActivateListener,
 	) {
-		super(tui, semanticTheme, appKeys);
+		super(tui, annotationTheme, appKeys);
 	}
 
 	override handleInput(data: string): void {
@@ -72,18 +72,18 @@ export class AnnotationEditor extends SemanticEditor {
 	}
 
 	override render(width: number): string[] {
-		const pastePills = renderEditorPasteMarkerPills(super.render(width), width, this.semanticTheme);
+		const pastePills = renderEditorPasteMarkerPills(super.render(width), width, this.annotationTheme);
 		const drafts = this.store.get();
 		const tokenOwners = new Map(drafts.map((draft) => [draft.token, draft.id]));
 		const rendered = renderEditorTokenPills(
 			pastePills.lines,
 			width,
-			this.semanticTheme,
+			this.annotationTheme,
 			drafts.map((draft) => ({
 				token: draft.token,
 				...composerPillContent(draft),
 				render: ({ content, destinationBackgroundAnsi, inverse }) =>
-					renderPill(this.semanticTheme, content, {
+					renderPill(this.annotationTheme, content, {
 						surface: "base",
 						state:
 							inverse && !isNativeCursorStyle(cursorStyle("insertion"))
@@ -101,7 +101,10 @@ export class AnnotationEditor extends SemanticEditor {
 		});
 		const lines = rendered.lines;
 		return lines.map((line) =>
-			markSemanticCursorPosition(markEditorCursor(line, { theme: this.semanticTheme, role: "insertion" }), "insertion"),
+			markSemanticCursorPosition(
+				markEditorCursor(line, { theme: this.annotationTheme, role: "insertion" }),
+				"insertion",
+			),
 		);
 	}
 
