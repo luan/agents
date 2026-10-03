@@ -307,6 +307,7 @@ export {
 	type SplitPaneRegistry,
 } from "./split-pane.ts";
 export { statusPresentationFrame } from "./status-presentation.ts";
+export { ScrollView, type ScrollViewGeometry, type ScrollViewOptions } from "./controls/scroll-view.ts";
 export {
 	highlightSyntaxBlock,
 	SyntaxText,

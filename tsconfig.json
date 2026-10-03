@@ -51,6 +51,9 @@
     },
     {
       "path": "harnesses/pi/agent/packages/pi-voice"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-token-burden"
     }
   ]
 }

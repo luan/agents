@@ -1,0 +1,33 @@
+{
+  "name": "@luan.sh/pi-token-burden",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "description": "Token burden report and active tool controls",
+  "pi": {
+    "extensions": [
+      "./src/extension.ts",
+      "./node_modules/@luan.sh/pi-libtui/src/extension.ts"
+    ]
+  },
+  "dependencies": {
+    "@luan.sh/pi-libtui": "workspace:*"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.0.0",
+    "@earendil-works/pi-tui": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.0",
+    "@earendil-works/pi-tui": "1.0.0",
+    "@types/bun": "^1.3.0",
+    "typescript": "^6.0.3"
+  },
+  "bundledDependencies": [
+    "@luan.sh/pi-libtui"
+  ],
+  "scripts": {
+    "typecheck": "tsc --build",
+    "test": "bun test test"
+  }
+}
