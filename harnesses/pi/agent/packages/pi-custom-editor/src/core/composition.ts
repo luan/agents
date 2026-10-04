@@ -190,7 +190,7 @@ export const EDITOR_PRESETS: Readonly<Record<CustomEditorPreset, PresetDefinitio
 		bottomRightSegments: [],
 	},
 	"minimal-field": { ...base, top: "none", leftRail: "static", rightRail: "static" },
-	"compact-field": base,
+	"compact-field": { ...base, bottomRightSegments: ["context", "statuses", "cost"] },
 	"full-field": { ...base, top: "none", leftRail: "animated", rightRail: "animated" },
 	"status-band": {
 		...base,

@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { tuiTheme } from "@luan.sh/pi-libtui";
+import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE } from "../src/appearance.ts";
 import {
 	type EditorCompositionStyle,
 	renderEditorComposition,
@@ -29,6 +30,9 @@ const style: EditorCompositionStyle = {
 	statusBand: "transparent",
 	inactiveRailTone: "accent",
 };
+
+beforeEach(() => configureTuiAppearance({ animationSpeed: "normal" }));
+afterEach(() => configureTuiAppearance(DEFAULT_TUI_APPEARANCE));
 
 describe("editor composition chrome", () => {
 	test("top rule renders the top quadrants", () => {

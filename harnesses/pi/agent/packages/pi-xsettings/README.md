@@ -131,15 +131,17 @@ Namespace `@luan.sh/pi-libtui` (label "TUI", all applied live):
 
 | Key | Default |
 | --- | --- |
-| `iconPack` | `unicode` (`nerd-fonts`, `unicode`, `emoji`) |
-| `activityIndicator` / `activityMessage` | `spinner` / `phase` |
-| `textEffect` / `textEffectScope` / `pulseEffect` | `off` / `message` / `off` |
+| `iconPack` | `auto` (`auto`, `nerd-fonts`, `unicode`, `emoji`) |
+| `activityIndicator` / `activityMessage` | `braille-wave` / `phase` |
+| `textEffect` / `textEffectScope` / `pulseEffect` | `sweep` / `message` / `off` |
 | `statusPresentation` | `standard` |
-| `animationSpeed` | `normal` (`slow`, `relaxed`, `normal`, `fast`, `very-fast`) |
+| `animationSpeed` | `relaxed` (`slow`, `relaxed`, `normal`, `fast`, `very-fast`) |
 | `animationSmoothness` | `balanced` (`economy`, `balanced`, `smooth`, `ultra`) |
-| `thinking*`, `working*`, `tool*` (`Indicator`, `Message`, `TextEffect`, `PulseEffect`, `Presentation`) | `inherit` (use the General value) |
+| `thinkingIndicator` / `thinkingTextEffect` / `thinkingPulseEffect` | `braille-pulse` / `glow` / `pulse` |
+| `workingIndicator` / `workingTextEffect` / `workingPulseEffect` | `braille-scanline` / `rainbow-glow` / `color` |
+| Other `thinking*`, `working*`, `tool*` values | `inherit` (use the General value) |
 | `powerline` / `powerlineButtons` / `softCursor` | `false` |
-| `userMessageBubbles` | `false` (right-aligned user messages; UI → TUI) |
+| `userMessageBubbles` | `true` (right-aligned user messages; UI → TUI) |
 | `insertionCursor` / `navigationCursor` / `selectionCursor` | `virtual` |
 
 ## Actions and keybindings

@@ -175,7 +175,7 @@ Settings use the `@luan.sh/pi-copy-mode` namespace:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `reactions` | Seven reactions listed above | Ordered choices in the reaction picker. An empty list disables it until a choice is configured. |
-| `copyOnSelect` | `false` | Copy text immediately when a mouse selection is completed. When off, the selection stays available for the action bar and keyboard adoption. |
+| `copyOnSelect` | `true` | Copy text immediately when a mouse selection is completed. When off, the selection stays available for the action bar and keyboard adoption. |
 
 Edit them under Interaction → Copy mode via `/xsettings` when
 `@luan.sh/pi-xsettings` is installed; otherwise the compiled defaults apply.

@@ -19,20 +19,20 @@ function result(overrides: Partial<UnifiedExecResult> = {}): UnifiedExecResult {
 }
 
 describe("tool behavior", () => {
-	test("registers an inherited Exec Command marker override with every shared marker choice", () => {
+	test("defaults Exec Command markers to off and offers with every shared marker choice", () => {
 		const unregister = registerExecCommandXSettings();
 		try {
 			const definition = ensureXSettingsRegistry().registrations["pi-exec-command"]?.definitions.find(
 				(candidate) => candidate.key === "activityIndicator",
 			);
-			expect(DEFAULT_EXEC_COMMAND_SETTINGS.activityIndicator).toBe("inherit");
+			expect(DEFAULT_EXEC_COMMAND_SETTINGS.activityIndicator).toBe("off");
 			expect(definition).toMatchObject({
 				category: "appearance",
 				page: "animations",
 				section: "Exec Command",
 				preview: "activity-marker",
 				type: "enum",
-				default: "inherit",
+				default: "off",
 			});
 			if (definition?.type !== "enum" || !Array.isArray(definition.options))
 				throw new Error("Exec Command activity marker must be an enum");

@@ -29,7 +29,7 @@ const definitions = {
 		label: "Copy on select",
 		description: "Copy text immediately when a mouse selection is completed.",
 		type: "boolean",
-		default: false,
+		default: true,
 	},
 } as const satisfies Record<string, SettingDefinitionInput>;
 

@@ -97,8 +97,8 @@ Astra keeps the original reasoning effort in the request and receives native
 boundaries in the Pi session, including after resume. Successful compaction
 establishes a new effort baseline.
 
-Enable **Auto reasoning** to expose `change_reasoning` to Astra in ordinary
-reasoning mode. It can request low, medium, or high effort, with your starting
+**Auto reasoning** is enabled by default and exposes `change_reasoning` to Astra
+in ordinary reasoning mode. It can request low, medium, or high effort, with your starting
 level as the floor. The extension restores the starting level when work ends;
 a later manual change takes precedence. The tool is unavailable in Persistent
 mode and on other models, including through Code Mode.
@@ -222,10 +222,10 @@ is installed; otherwise the defaults apply.
 | `currentTimeReminderSleep` | `auto` | `auto`, `on`, `off` |
 | `sleepTool` | `true` | boolean |
 | `sleepToolMode` | `model_driven` | `model_driven`, `always_on` |
-| `sendMessageToUserAsync` | `false` | boolean |
-| `cacheDiagnostics` | `off` | `off`, `status`, `status-and-log` |
+| `sendMessageToUserAsync` | `true` | boolean |
+| `cacheDiagnostics` | `status` | `off`, `status`, `status-and-log` |
 | `lunaReserve` | `true` | boolean; backend-authorized fallback after a quota error |
-| `autoReasoning` | `false` | boolean; Astra only |
+| `autoReasoning` | `true` | boolean; Astra only |
 | `portableCompaction` | `false` | boolean; readable summary alongside native compaction |
 | `fallbackCompaction` | `true` | boolean |
 | `fastModeDefault` | `false` | boolean |
@@ -233,7 +233,7 @@ is installed; otherwise the defaults apply.
 | `contextAutoUpgrade` | `never` | `never`, `mid-turn`, `always` |
 | `textVerbosity` | `low` | `low`, `medium`, `high` |
 
-- `cacheDiagnostics`: `status` shows prompt-cache hit/miss in the footer;
+- `cacheDiagnostics`: defaults to `status`, showing prompt-cache hit/miss in the footer;
   `status-and-log` also writes metadata-only logs under
   `<Pi agent directory>/logs/codex-native/`.
 - `fallbackCompaction`: for Codex models the package replaces Pi's compaction

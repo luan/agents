@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+	configureAutomaticIconPack,
 	configureTuiAppearance,
 	DEFAULT_TUI_APPEARANCE,
 	getTuiAppearance,
@@ -8,31 +9,66 @@ import {
 	resolveActivityPresentation,
 	subscribeTuiAppearance,
 	TUI_ACTIVITY_INDICATOR_OPTIONS,
+	terminalIconPack,
 } from "../src/appearance.ts";
+import { icon } from "../src/decoration/glyphs.ts";
 
 describe("shared TUI appearance", () => {
-	afterEach(() => configureTuiAppearance(DEFAULT_TUI_APPEARANCE));
+	afterEach(() => {
+		configureAutomaticIconPack("unicode");
+		configureTuiAppearance(DEFAULT_TUI_APPEARANCE);
+	});
+
+	test.each(["ghostty", "kitty", "WezTerm"])("auto icons use %s's bundled Nerd glyphs", (terminal) => {
+		configureTuiAppearance({ iconPack: "auto" });
+		configureAutomaticIconPack(terminalIconPack(terminal));
+		expect(getTuiAppearance().iconPack).toBe("nerd-fonts");
+		expect(icon("comment")).toBe("");
+	});
+
+	test.each([undefined, "", "Apple_Terminal", "iTerm.app", "bootty", "unknown"])(
+		"auto icons fall back to Unicode when coverage is unknown (%s)",
+		(terminal) => {
+			configureTuiAppearance({ iconPack: "auto" });
+			configureAutomaticIconPack(terminalIconPack(terminal));
+			expect(getTuiAppearance().iconPack).toBe("unicode");
+			expect(icon("comment")).toBe("✎");
+		},
+	);
+
+	test("terminal detection preserves manual choices and Auto responds to capability changes", () => {
+		configureTuiAppearance({ iconPack: "emoji" });
+		configureAutomaticIconPack("nerd-fonts");
+		expect(getTuiAppearance().iconPack).toBe("emoji");
+		configureTuiAppearance({ iconPack: "auto" });
+		expect(getTuiAppearance().iconPack).toBe("nerd-fonts");
+		configureAutomaticIconPack("unicode");
+		expect(getTuiAppearance().iconPack).toBe("unicode");
+		configureTuiAppearance({ iconPack: "nerd-fonts" });
+		configureAutomaticIconPack("unicode");
+		expect(getTuiAppearance().iconPack).toBe("nerd-fonts");
+	});
 
 	test("starts with portable defaults", () => {
 		expect(DEFAULT_TUI_APPEARANCE).toEqual({
-			iconPack: "unicode",
-			activityIndicator: "spinner",
+			iconPack: "auto",
+			activityIndicator: "braille-wave",
 			activityMessage: "phase",
-			textEffect: "off",
+			textEffect: "sweep",
 			textEffectScope: "message",
 			pulseEffect: "off",
 			statusPresentation: "standard",
-			animationSpeed: "normal",
+			animationSpeed: "relaxed",
 			animationSmoothness: "balanced",
-			thinkingIndicator: "inherit",
+			thinkingIndicator: "braille-pulse",
 			thinkingMessage: "inherit",
-			thinkingTextEffect: "inherit",
-			thinkingPulseEffect: "inherit",
+			thinkingTextEffect: "glow",
+			thinkingPulseEffect: "pulse",
 			thinkingPresentation: "inherit",
-			workingIndicator: "inherit",
+			workingIndicator: "braille-scanline",
 			workingMessage: "inherit",
-			workingTextEffect: "inherit",
-			workingPulseEffect: "inherit",
+			workingTextEffect: "rainbow-glow",
+			workingPulseEffect: "color",
 			workingPresentation: "inherit",
 			toolIndicator: "inherit",
 			toolMessage: "inherit",
@@ -42,12 +78,12 @@ describe("shared TUI appearance", () => {
 			powerline: false,
 			powerlineButtons: false,
 			softCursor: false,
-			userMessageBubbles: false,
+			userMessageBubbles: true,
 			insertionCursor: "virtual",
 			navigationCursor: "virtual",
 			selectionCursor: "virtual",
 		});
-		expect(getTuiAppearance()).toEqual(DEFAULT_TUI_APPEARANCE);
+		expect(getTuiAppearance()).toEqual({ ...DEFAULT_TUI_APPEARANCE, iconPack: "unicode" });
 	});
 
 	test("notifies subscribers only for effective changes", () => {

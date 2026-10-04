@@ -164,7 +164,7 @@ apply. Changes apply live and republish the tool definitions.
 | `defaultOutputTokens` | `10000` | `1000`, `2500`, `5000`, `10000`, `20000`, `50000`, `100000` |
 | `defaultExecYieldMs` | `10000` | `1000`, `5000`, `10000`, `30000` |
 | `defaultLoginShell` | `true` | `true`, `false` |
-| `activityIndicator` | `"inherit"` | `"inherit"` or any shared TUI indicator style |
+| `activityIndicator` | `"off"` | `"inherit"` or any shared TUI indicator style |
 | `processWidgetIndicator` | `"inherit"` | `"inherit"` or any shared TUI indicator style |
 | `processHubPresentation` | `"side-panel"` | `"side-panel"`, `"fullscreen"` |
 

@@ -54,9 +54,12 @@ without it the defaults apply and there is no in-app way to change them.
 `claude-code`, `pi`, `borderless`, `top-rule`, `minimal-field`,
 `compact-field`, `full-field`, `status-band`. A preset fixes surface,
 top/bottom treatment, rails, prompt marker, bottom status row, separator, band
-style, and the segments in each quadrant. Every explicit control below defaults
-to `preset`, meaning "inherit from the selected preset"; setting it to any other
-value overrides only that piece.
+style, and the segments in each quadrant. Most style controls default to
+`preset`, meaning "inherit from the selected preset". The right rail defaults
+to `animated`; an explicit value overrides only that piece.
+
+The default `compact-field` preset includes context, statuses, and cost in its
+bottom-right quadrant, even when `segmentSource` remains `preset`.
 
 ### Status segments
 
@@ -106,16 +109,16 @@ defaults below apply.
 | `topTreatment` | `preset` | `none`, `half-block`, `rule`, `status-band` |
 | `bottomTreatment` | `preset` | `none`, `rule` |
 | `leftRail` | `preset` | `off`, `static`, `animated` |
-| `rightRail` | `preset` | `off`, `static`, `animated` |
+| `rightRail` | `animated` | `preset`, `off`, `static`, `animated` |
 | `promptMarker` | `preset` | `none`, `angle`, `angleDouble`, `arrowHeavy`, `triangleFilled`, `triangleOutline`, `angleHeavy`, `angleWide`, `chevronOpen`, `chevronLight`, `chevronMedium`, `chevron`, `chevronHeavy`, `nfChevron`, `nfDoubleChevron`, `nfCircle`, `nfTerminal`, `nfPrompt` |
 | `railTone` | `accent` | `accent`, `border` (color of rails at rest) |
 | `footer` | `preset` | `off`, `on` (bottom status row, independent of the bottom rule) |
 | `segmentSource` | `preset` | `preset`, `custom` |
-| `workingPlacement` | `transcript` | `transcript`, `hidden`, `top-left-start`, `top-left-end`, `top-right-start`, `top-right-end`, `bottom-left-start`, `bottom-left-end`, `bottom-right-start`, `bottom-right-end` |
+| `workingPlacement` | `bottom-left-start` | `transcript`, `hidden`, `top-left-start`, `top-left-end`, `top-right-start`, `top-right-end`, `bottom-left-start`, `bottom-left-end`, `bottom-right-start`, `bottom-right-end` |
 | `topLeftSegments` | `[]` | ordered list of segment ids |
 | `topRightSegments` | `["path", "git", "model", "thinking", "fast"]` | ordered list of segment ids |
 | `bottomLeftSegments` | `[]` | ordered list of segment ids |
-| `bottomRightSegments` | `["context"]` | ordered list of segment ids |
+| `bottomRightSegments` | `["context", "statuses", "cost"]` | ordered list of segment ids |
 | `statusSeparator` | `preset` | `space`, `dot`, `chevron`, `powerline` |
 | `statusBand` | `preset` | `transparent`, `filled`, `powerline` |
 

@@ -55,7 +55,18 @@ class FakeUi {
 	}
 }
 
-beforeEach(() => configureTuiAppearance(DEFAULT_TUI_APPEARANCE));
+beforeEach(() =>
+	configureTuiAppearance({
+		...DEFAULT_TUI_APPEARANCE,
+		animationSpeed: "normal",
+		workingIndicator: "inherit",
+		workingTextEffect: "inherit",
+		workingPulseEffect: "inherit",
+		thinkingIndicator: "inherit",
+		thinkingTextEffect: "inherit",
+		thinkingPulseEffect: "inherit",
+	}),
+);
 afterEach(() => configureTuiAppearance(DEFAULT_TUI_APPEARANCE));
 
 describe("request animation", () => {

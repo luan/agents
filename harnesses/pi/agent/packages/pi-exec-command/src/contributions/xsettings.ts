@@ -34,7 +34,7 @@ const definitions = {
 		section: "Exec Command",
 		preview: "activity-marker",
 		type: "enum",
-		default: "inherit",
+		default: "off",
 		options: [
 			{ value: "inherit", label: "Inherit", description: "Use the default TUI activity indicator." },
 			...TUI_ACTIVITY_INDICATOR_OPTIONS,

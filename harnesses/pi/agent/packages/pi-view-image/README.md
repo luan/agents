@@ -130,7 +130,7 @@ can invalidate the old prompt prefix once; it is not repeated on every request.
 
 Settings use namespace `pi-view-image` in xsettings: **Describe images for text-only models**
 (`descriptionFallback`) defaults to true; **Image description model**
-(`descriptionModel`) defaults to `openai-codex/gpt-5.6-luna`. The selected model
+(`descriptionModel`) defaults to `openai-codex/gpt-6-luna`. The selected model
 must support image input and be authenticated in Pi. Descriptions are bounded
 to 32,000 characters. The fallback applies to `view_image` calls; it does not
 convert every image pasted into a text-only conversation.

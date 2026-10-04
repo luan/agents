@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { configureAutomaticIconPack, terminalIconPack } from "./appearance.ts";
 import { Color256Preview } from "./color/preview.ts";
 import { claimLibtuiExtensionHost } from "./host/extension-host.ts";
 import { retainNativeToolBridge } from "./host/native-tool-bridge.ts";
@@ -26,6 +27,7 @@ export default function libtuiExtension(pi: ExtensionAPI): void {
 		},
 	});
 	pi.on("session_start", (_event, ctx) => {
+		configureAutomaticIconPack(terminalIconPack(process.env.TERM_PROGRAM));
 		host.nested.clear();
 		host.start(ctx);
 	});

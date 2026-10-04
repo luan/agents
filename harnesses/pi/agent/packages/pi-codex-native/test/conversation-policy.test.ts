@@ -11,13 +11,14 @@ test("Codex catalog and explicit flags control async tools independently of pers
 		const settings = { ...defaults, reasoningMode: persistent };
 		expect(conversationToolAllowed("request_user_input_async", "gpt-6-astra", false, settings)).toBe(true);
 		expect(conversationToolAllowed("request_user_input_async", "gpt-5.6-sol", false, settings)).toBe(false);
-		expect(conversationToolAllowed("send_message_to_user_async", "gpt-6-astra", false, settings)).toBe(false);
+		expect(conversationToolAllowed("send_message_to_user_async", "gpt-6-astra", false, settings)).toBe(true);
+		expect(conversationToolAllowed("send_message_to_user_async", "gpt-6.1-sol", false, settings)).toBe(true);
 		expect(
 			conversationToolAllowed("send_message_to_user_async", "gpt-5.6-sol", false, {
 				...settings,
-				sendMessageToUserAsync: true,
+				sendMessageToUserAsync: false,
 			}),
-		).toBe(true);
+		).toBe(false);
 		for (const name of ["request_user_input_async", "send_message_to_user_async"])
 			expect(conversationToolAllowed(name, "gpt-6-astra", true, { ...settings, sendMessageToUserAsync: true })).toBe(
 				false,

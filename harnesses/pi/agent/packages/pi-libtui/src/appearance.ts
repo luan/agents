@@ -2,6 +2,13 @@ import { bumpTuiRenderEpoch } from "./render-epoch.ts";
 
 /** Glyph family used to resolve every semantic icon token. */
 export type TuiIconPack = "nerd-fonts" | "unicode" | "emoji";
+export type TuiIconPackSelection = TuiIconPack | "auto";
+
+/** Detect bundled glyph support, not the user's chosen font. */
+export function terminalIconPack(terminalProgram: string | undefined): TuiIconPack {
+	// Limit: known bundled fonts only; expand when a terminal exposes glyph coverage.
+	return ["ghostty", "kitty", "wezterm"].includes(terminalProgram?.toLowerCase() ?? "") ? "nerd-fonts" : "unicode";
+}
 
 /** Compact glyph animation shown before an activity message. */
 export type TuiActivityIndicatorStyle =
@@ -214,7 +221,7 @@ export type TuiCursorStyle =
 
 /** Process-wide rendering choices consumed by pi-libtui components. */
 export interface TuiAppearanceSettings {
-	iconPack: TuiIconPack;
+	iconPack: TuiIconPackSelection;
 	activityIndicator: TuiActivityIndicatorStyle;
 	activityMessage: TuiActivityMessageStyle;
 	textEffect: TuiTextEffectStyle;
@@ -247,26 +254,28 @@ export interface TuiAppearanceSettings {
 	selectionCursor: TuiCursorStyle;
 }
 
+export type ResolvedTuiAppearance = Omit<TuiAppearanceSettings, "iconPack"> & { iconPack: TuiIconPack };
+
 /** Appearance used when no xsettings host has published an override. */
 export const DEFAULT_TUI_APPEARANCE: Readonly<TuiAppearanceSettings> = Object.freeze({
-	iconPack: "unicode",
-	activityIndicator: "spinner",
+	iconPack: "auto",
+	activityIndicator: "braille-wave",
 	activityMessage: "phase",
-	textEffect: "off",
+	textEffect: "sweep",
 	textEffectScope: "message",
 	pulseEffect: "off",
 	statusPresentation: "standard",
-	animationSpeed: "normal",
+	animationSpeed: "relaxed",
 	animationSmoothness: "balanced",
-	thinkingIndicator: "inherit",
+	thinkingIndicator: "braille-pulse",
 	thinkingMessage: "inherit",
-	thinkingTextEffect: "inherit",
-	thinkingPulseEffect: "inherit",
+	thinkingTextEffect: "glow",
+	thinkingPulseEffect: "pulse",
 	thinkingPresentation: "inherit",
-	workingIndicator: "inherit",
+	workingIndicator: "braille-scanline",
 	workingMessage: "inherit",
-	workingTextEffect: "inherit",
-	workingPulseEffect: "inherit",
+	workingTextEffect: "rainbow-glow",
+	workingPulseEffect: "color",
 	workingPresentation: "inherit",
 	toolIndicator: "inherit",
 	toolMessage: "inherit",
@@ -276,27 +285,28 @@ export const DEFAULT_TUI_APPEARANCE: Readonly<TuiAppearanceSettings> = Object.fr
 	powerline: false,
 	powerlineButtons: false,
 	softCursor: false,
-	userMessageBubbles: false,
+	userMessageBubbles: true,
 	insertionCursor: "virtual",
 	navigationCursor: "virtual",
 	selectionCursor: "virtual",
 });
 
-const APPEARANCE_PROTOCOL = "pi-libtui/appearance/v8" as const;
+const APPEARANCE_PROTOCOL = "pi-libtui/appearance/v9" as const;
 const APPEARANCE_KEY = Symbol.for(APPEARANCE_PROTOCOL);
 
 interface AppearanceRegistry {
 	readonly protocol: typeof APPEARANCE_PROTOCOL;
 	configure(next: Partial<TuiAppearanceSettings>): void;
-	get(): Readonly<TuiAppearanceSettings>;
+	setAutomaticIconPack(pack: TuiIconPack): void;
+	get(): Readonly<ResolvedTuiAppearance>;
 	subscribe(listener: () => void): () => void;
 }
 
 // type-boundary: Symbol.for state may come from another extension realm; appearanceRegistry validates it immediately.
 type UntrustedAppearanceValue = unknown;
 
-function isIconPack(value: UntrustedAppearanceValue): value is TuiIconPack {
-	return value === "nerd-fonts" || value === "unicode" || value === "emoji";
+function isIconPack(value: UntrustedAppearanceValue): value is TuiIconPackSelection {
+	return value === "auto" || value === "nerd-fonts" || value === "unicode" || value === "emoji";
 }
 
 /** Narrow an external value to one supported activity marker. */
@@ -488,6 +498,7 @@ function isAppearanceRegistry(value: UntrustedAppearanceValue): value is Appeara
 	return (
 		candidate.protocol === APPEARANCE_PROTOCOL &&
 		typeof candidate.configure === "function" &&
+		typeof candidate.setAutomaticIconPack === "function" &&
 		typeof candidate.get === "function" &&
 		typeof candidate.subscribe === "function"
 	);
@@ -593,24 +604,33 @@ function appearanceRegistry(): AppearanceRegistry {
 	if (isAppearanceRegistry(existing)) return existing;
 
 	let settings = DEFAULT_TUI_APPEARANCE;
+	let automaticIconPack: TuiIconPack = "unicode";
+	let resolved: Readonly<ResolvedTuiAppearance> = Object.freeze({ ...settings, iconPack: automaticIconPack });
 	const listeners = new Set<() => void>();
+	const refresh = (): void => {
+		const updated = { ...settings, iconPack: settings.iconPack === "auto" ? automaticIconPack : settings.iconPack };
+		if (sameAppearance(updated, resolved)) return;
+		resolved = Object.freeze(updated);
+		bumpTuiRenderEpoch();
+		for (const listener of [...listeners]) {
+			try {
+				listener();
+			} catch {
+				// Rendering subscriptions must not prevent other components from updating.
+			}
+		}
+	};
 	const registry: AppearanceRegistry = {
 		protocol: APPEARANCE_PROTOCOL,
 		configure(next) {
-			const updated = mergeAppearance(settings, next);
-			if (sameAppearance(updated, settings)) return;
-
-			settings = Object.freeze(updated);
-			bumpTuiRenderEpoch();
-			for (const listener of [...listeners]) {
-				try {
-					listener();
-				} catch {
-					// Rendering subscriptions must not prevent other components from updating.
-				}
-			}
+			settings = Object.freeze(mergeAppearance(settings, next));
+			refresh();
 		},
-		get: () => settings,
+		setAutomaticIconPack(pack) {
+			automaticIconPack = pack;
+			refresh();
+		},
+		get: () => resolved,
 		subscribe(listener) {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
@@ -626,8 +646,13 @@ export function configureTuiAppearance(next: Partial<TuiAppearanceSettings>): vo
 	appearanceRegistry().configure(next);
 }
 
+/** Supply terminal capabilities at the extension's lifecycle boundary. */
+export function configureAutomaticIconPack(pack: TuiIconPack): void {
+	appearanceRegistry().setAutomaticIconPack(pack);
+}
+
 /** Read the immutable current process-wide appearance. */
-export function getTuiAppearance(): Readonly<TuiAppearanceSettings> {
+export function getTuiAppearance(): Readonly<ResolvedTuiAppearance> {
 	return appearanceRegistry().get();
 }
 

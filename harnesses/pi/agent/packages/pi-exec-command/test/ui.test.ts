@@ -55,7 +55,7 @@ describe("exec command UI", () => {
 		});
 		const plain = (rows: string[]) => rows.map((row) => stripTerminalSequences(row).trimEnd()).join("\n");
 		expect(plain(command.render(60))).toBe(
-			"⠋ Exploring\n  └ Read app.rs, lib.rs\n    Search summarize in src\n    List crates",
+			"⠁⠂⠄⡀ Exploring\n  └ Read app.rs, lib.rs\n    Search summarize in src\n    List crates",
 		);
 
 		command.update({

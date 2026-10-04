@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE } from "../src/appearance.ts";
@@ -29,6 +29,7 @@ const theme = {
 } as never as Theme;
 
 afterEach(() => configureTuiAppearance(DEFAULT_TUI_APPEARANCE));
+beforeEach(() => configureTuiAppearance({ animationSpeed: "normal" }));
 
 interface FakeTimer extends MotionTimerHandle {
 	callback: () => void;

@@ -289,7 +289,11 @@ describe("exec tool presentation", () => {
 	});
 
 	test("animates a live partial presentation through shared motion and disposes cleanly", () => {
-		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
+		configureTuiAppearance({ activityIndicator: "spinner", textEffect: "off", animationSpeed: "normal" });
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME, {
+			...DEFAULT_EXEC_COMMAND_SETTINGS,
+			activityIndicator: "inherit",
+		});
 		const args = { cmd: "sleep 1", tty: false };
 		const partial = createExecToolResult({
 			tool: "exec_command",
@@ -356,7 +360,10 @@ describe("exec tool presentation", () => {
 
 	test("switches a running command to the configured activity animation", () => {
 		configureTuiAppearance({ activityIndicator: "static", textEffect: "off" });
-		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME, {
+			...DEFAULT_EXEC_COMMAND_SETTINGS,
+			activityIndicator: "inherit",
+		});
 		const args = { cmd: "sleep 1", tty: false };
 		const partial = createExecToolResult({
 			tool: "exec_command",
@@ -380,12 +387,9 @@ describe("exec tool presentation", () => {
 		active.dispose();
 	});
 
-	test("lets exec_command disable its marker without changing the shared default", () => {
+	test("defaults exec_command markers to off without changing the shared indicator", () => {
 		configureTuiAppearance({ activityIndicator: "spinner", textEffect: "off" });
-		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME, {
-			...DEFAULT_EXEC_COMMAND_SETTINGS,
-			activityIndicator: "off",
-		});
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const args = { cmd: "sleep 1", tty: false };
 		const partial = createExecToolResult({
 			tool: "exec_command",

@@ -34,7 +34,12 @@ describe("agent presentation formatting", () => {
 
 	test("keeps running agent shimmer text independent from markers", () => {
 		const colors = tuiTheme(theme);
-		configureTuiAppearance({ activityIndicator: "static", textEffect: "off", pulseEffect: "color" });
+		configureTuiAppearance({
+			activityIndicator: "static",
+			textEffect: "off",
+			pulseEffect: "color",
+			animationSpeed: "normal",
+		});
 		expect(stripTerminalSequences(renderAgentStatusMarker(colors, "running", 0, 300))).toBe("●");
 		configureTuiAppearance({ activityIndicator: "off", textEffect: "glow" });
 		expect(renderAgentStatusMarker(colors, "running", 0, 300)).toBe("");

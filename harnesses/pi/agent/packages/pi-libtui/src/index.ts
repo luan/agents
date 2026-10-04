@@ -29,6 +29,8 @@ export {
 	type TuiAppearanceSettings,
 	type TuiCursorStyle,
 	type TuiIconPack,
+	type TuiIconPackSelection,
+	type ResolvedTuiAppearance,
 	type TuiPulseEffectStyle,
 	type TuiRequestPhase,
 	type TuiStatusPresentationStyle,

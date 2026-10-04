@@ -84,8 +84,13 @@ export const tuiSettings = createSettings({
 			label: "Icon pack",
 			description: "Icon set used by shared TUI components.",
 			type: "enum",
-			default: "unicode",
+			default: "auto",
 			options: [
+				{
+					value: "auto",
+					label: "Auto",
+					description: "Use bundled Nerd Font support in known terminals; Unicode otherwise.",
+				},
 				{ value: "nerd-fonts", label: "Nerd Fonts", description: "Patched-font icons." },
 				{ value: "unicode", label: "Unicode", description: "Plain text Unicode symbols." },
 				{ value: "emoji", label: "Emoji", description: "Color emoji symbols." },
@@ -99,7 +104,7 @@ export const tuiSettings = createSettings({
 			label: "Activity indicator",
 			description: "Compact one-to-four-cell animation shown beside active work.",
 			type: "enum",
-			default: "spinner",
+			default: "braille-wave",
 			options: TUI_ACTIVITY_INDICATOR_OPTIONS,
 		},
 		activityMessage: {
@@ -121,7 +126,7 @@ export const tuiSettings = createSettings({
 			label: "Text effect",
 			description: "Motion painted across the composed activity text.",
 			type: "enum",
-			default: "off",
+			default: "sweep",
 			options: textEffectOptions,
 		},
 		textEffectScope: {
@@ -171,7 +176,7 @@ export const tuiSettings = createSettings({
 			label: "Animation speed",
 			description: "Pace of every activity indicator, text effect, and status presentation.",
 			type: "enum",
-			default: "normal",
+			default: "relaxed",
 			options: [
 				{ value: "slow", label: "Slow", description: "Run animations at 60% of their normal pace." },
 				{ value: "relaxed", label: "Relaxed", description: "Run animations at 80% of their normal pace." },
@@ -204,7 +209,7 @@ export const tuiSettings = createSettings({
 			label: "Indicator",
 			description: "Indicator shown while the model is reasoning.",
 			type: "enum",
-			default: "inherit",
+			default: "braille-pulse",
 			options: inheritedIndicatorOptions,
 		},
 		thinkingMessage: {
@@ -226,7 +231,7 @@ export const tuiSettings = createSettings({
 			label: "Text effect",
 			description: "Text effect shown while the model is reasoning.",
 			type: "enum",
-			default: "inherit",
+			default: "glow",
 			options: inheritedTextEffectOptions,
 		},
 		thinkingPulseEffect: {
@@ -237,7 +242,7 @@ export const tuiSettings = createSettings({
 			label: "Pulse effect",
 			description: "Pulse effect used while the model is reasoning.",
 			type: "enum",
-			default: "inherit",
+			default: "pulse",
 			options: inheritedPulseEffectOptions,
 		},
 		thinkingPresentation: {
@@ -259,7 +264,7 @@ export const tuiSettings = createSettings({
 			label: "Indicator",
 			description: "Indicator shown while the model generates a response.",
 			type: "enum",
-			default: "inherit",
+			default: "braille-scanline",
 			options: inheritedIndicatorOptions,
 		},
 		workingMessage: {
@@ -281,7 +286,7 @@ export const tuiSettings = createSettings({
 			label: "Text effect",
 			description: "Text effect shown while the model generates a response.",
 			type: "enum",
-			default: "inherit",
+			default: "rainbow-glow",
 			options: inheritedTextEffectOptions,
 		},
 		workingPulseEffect: {
@@ -292,7 +297,7 @@ export const tuiSettings = createSettings({
 			label: "Pulse effect",
 			description: "Pulse effect used while the model generates a response.",
 			type: "enum",
-			default: "inherit",
+			default: "color",
 			options: inheritedPulseEffectOptions,
 		},
 		workingPresentation: {
@@ -390,7 +395,7 @@ export const tuiSettings = createSettings({
 			label: "User message bubbles",
 			description: "Show user messages in right-aligned bubbles instead of full-width rows.",
 			type: "boolean",
-			default: false,
+			default: true,
 		},
 		insertionCursor: {
 			category: "appearance",

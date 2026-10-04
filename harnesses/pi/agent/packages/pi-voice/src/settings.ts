@@ -6,7 +6,7 @@ export const voiceSettings = createSettings({
 		v3Voice: {
 			category: "behavior",
 			type: "enum",
-			default: "cove",
+			default: "sol",
 			label: "Voice",
 			description: "Voice used by the realtime conversation.",
 			options: ["cove", "vale", "ember", "breeze", "juniper", "maple", "sol", "spruce", "arbor"].map((value) => ({
@@ -53,7 +53,7 @@ export const voiceSettings = createSettings({
 		contextModel: {
 			category: "behavior",
 			type: "string",
-			default: "openai-codex/gpt-5.6-luna",
+			default: "openai-codex/gpt-6-luna",
 			label: "Voice context model",
 			description: "Provider/model used for isolated conversation summaries.",
 		},

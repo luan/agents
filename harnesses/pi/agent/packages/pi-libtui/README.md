@@ -246,29 +246,38 @@ defaults:
 
 | Key | Default | Values |
 | --- | --- | --- |
-| `iconPack` | `unicode` | `unicode`, `nerd-fonts`, `emoji` |
-| `activityIndicator` | `spinner` | `off`, `spinner`, `static`, and the Unicode/ASCII/Braille/Nerd Font animations in `TUI_ACTIVITY_INDICATOR_OPTIONS` |
+| `iconPack` | `auto` | `auto`, `unicode`, `nerd-fonts`, `emoji` |
+| `activityIndicator` | `braille-wave` | `off`, `spinner`, `static`, and the Unicode/ASCII/Braille/Nerd Font animations in `TUI_ACTIVITY_INDICATOR_OPTIONS` |
 | `activityMessage` | `phase` | `phase`, `typewriter` |
-| `textEffect` | `off` | `off`, `sweep`, `glow`, `rainbow`, `rainbow-glow`, `lightning`, `aurora`, `glitch`, `crush` |
+| `textEffect` | `sweep` | `off`, `sweep`, `glow`, `rainbow`, `rainbow-glow`, `lightning`, `aurora`, `glitch`, `crush` |
 | `textEffectScope` | `message` | message only or the whole indicator, separator, and message unit |
 | `pulseEffect` | `off` | dim-to-bright or contrasting-color pulse over any indicator/text effect |
 | `statusPresentation` | `standard` | `standard`, mixed compositions such as `brainstorm`, or exclusive scenes in `TUI_STATUS_PRESENTATION_OPTIONS` |
-| `animationSpeed` | `normal` | `slow`, `relaxed`, `normal`, `fast`, `very-fast` |
+| `animationSpeed` | `relaxed` | `slow`, `relaxed`, `normal`, `fast`, `very-fast` |
 | `animationSmoothness` | `balanced` | `economy`, `balanced`, `smooth`, `ultra` (roughly 13 to 60 redraws per second) |
-| `thinking*`, `working*`, `tool*` (`Indicator`, `Message`, `TextEffect`, `PulseEffect`, `Presentation`) | `inherit` | per-phase overrides of the general value |
+| `thinkingIndicator`, `thinkingTextEffect`, `thinkingPulseEffect` | `braille-pulse`, `glow`, `pulse` | thinking-phase overrides |
+| `workingIndicator`, `workingTextEffect`, `workingPulseEffect` | `braille-scanline`, `rainbow-glow`, `color` | working-phase overrides |
+| Other `thinking*`, `working*`, `tool*` values | `inherit` | per-phase overrides of the general value |
 | `powerline`, `powerlineButtons`, `softCursor` | `false` | Powerline separators, button caps, softer virtual cursor |
-| `userMessageBubbles` | `false` | Right-aligned user messages with the native message background |
+| `userMessageBubbles` | `true` | Right-aligned user messages with the native message background |
 | `insertionCursor`, `navigationCursor`, `selectionCursor` | `virtual` | cursor styles |
 
-Enable **User message bubbles** under **UI → TUI** in `/xsettings`, or set
-`pi-libtui.userMessageBubbles = true` under `[appearance]` in `xsettings.toml`.
+**Auto** uses Nerd Font glyphs when `TERM_PROGRAM` identifies Ghostty, Kitty,
+or WezTerm, which bundle those glyphs. Other terminals fall back to Unicode;
+cell-width probes cannot distinguish a supported glyph from a missing-glyph box.
+An explicit icon pack always overrides detection. Powerline settings remain
+independent.
+
+**User message bubbles** are enabled by default. Disable them under **UI → TUI**
+in `/xsettings`, or set `pi-libtui.userMessageBubbles = false` under
+`[appearance]` in `xsettings.toml`.
 Messages shrink to fit their rendered text, using up to 75% of the transcript
 width, capped at 60 columns, with left-aligned text. All bubbles use solid sides
 and half-block top/bottom edges for a little vertical breathing room, regardless
 of the icon pack.
 Panes narrower than 40 columns use the available width. Changes
 apply live to existing messages; markdown, annotations, and terminal message
-markers remain native. Without Xsettings the setting defaults to off.
+markers remain native. Without Xsettings the setting defaults to on.
 
 Inline activity is composed as `indicator + message`, then the effect scope is
 painted; an exclusive scene replaces that composition. The extension applies
@@ -317,7 +326,8 @@ through `src/color/resolver.ts`. Feature code uses only the root color API:
   Install `@luan.sh/pi-libtui` as a Pi package or list its `src/extension.ts`
   in the feature package's `pi.extensions`.
 - Nerd Font or Powerline glyphs are missing: set the icon pack to `unicode` and
-  disable Powerline in `/xsettings`. Those are also the compiled defaults.
+  disable Powerline in `/xsettings`. Auto falls back to Unicode in unknown
+  terminals; Powerline is off by default.
 - `cargo was not found`: install Rust from https://rustup.rs, or set the
   binary's env override to a prebuilt executable.
 

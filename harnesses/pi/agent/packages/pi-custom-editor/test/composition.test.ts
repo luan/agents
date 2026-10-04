@@ -72,9 +72,12 @@ describe("custom editor compositions", () => {
 		expect(resolved.bottomRightSegments).toEqual(["context"]);
 	});
 
-	test("defaults working activity to Pi's transcript and places it in one requested quadrant", () => {
-		const transcript = resolveEditorComposition(DEFAULT_CUSTOM_EDITOR_SETTINGS);
-		expect(DEFAULT_CUSTOM_EDITOR_SETTINGS.workingPlacement).toBe("transcript");
+	test("defaults working activity to the bottom left and places it in one requested quadrant", () => {
+		const defaults = resolveEditorComposition(DEFAULT_CUSTOM_EDITOR_SETTINGS);
+		expect(defaults.style.rightRail).toBe("animated");
+		expect(defaults.bottomLeftSegments).toEqual(["working"]);
+		expect(defaults.bottomRightSegments).toEqual(["context", "statuses", "cost"]);
+		const transcript = resolveEditorComposition({ ...DEFAULT_CUSTOM_EDITOR_SETTINGS, workingPlacement: "transcript" });
 		expect([
 			...transcript.topLeftSegments,
 			...transcript.topRightSegments,

@@ -173,7 +173,7 @@ const definitions = {
 		label: "Right rail",
 		description: "Control the right field rail independently.",
 		type: "enum",
-		default: "preset",
+		default: "animated",
 		preview: "editor-composition",
 		options: [
 			{ ...inherited, preview: presetPreview(previewPreset) },
@@ -260,7 +260,7 @@ const definitions = {
 		label: "Working placement",
 		description: "Place the existing Animations → Working presentation; Pi default uses the editor header.",
 		type: "enum",
-		default: "transcript",
+		default: "bottom-left-start",
 		options: WORKING_PLACEMENTS.map(workingPlacementOption),
 	},
 	topLeftSegments: {
@@ -310,7 +310,7 @@ const definitions = {
 		description: "Choose and order segments in the bottom-right quadrant.",
 		type: "multi-enum",
 		ordered: true,
-		default: ["context", "statuses"],
+		default: ["context", "statuses", "cost"],
 		options: STATUS_SEGMENTS.filter((value) => value !== "working").map((value) =>
 			option(value, value.replaceAll("-", " "), `Show ${value.replaceAll("-", " ")}.`),
 		),

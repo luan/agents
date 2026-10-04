@@ -14,7 +14,7 @@ export const imageSettings = createSettings({
 		descriptionModel: {
 			category: "tools",
 			type: "string",
-			default: "openai-codex/gpt-5.6-luna",
+			default: "openai-codex/gpt-6-luna",
 			apply: "live",
 			label: "Image description model",
 			description: "Provider/model used for the additional vision request.",

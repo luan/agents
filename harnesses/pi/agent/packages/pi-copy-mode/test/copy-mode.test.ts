@@ -465,7 +465,7 @@ describe("copy mode", () => {
 	});
 
 	test("defers native mouse copy only while a valid host can adopt selection", () => {
-		const view = harness();
+		const view = harness({ copyOnSelect: false });
 		const host = view.host(bindings({}));
 		expect(view.registry.shouldDeferNativeCopy()).toBe(true);
 		host.dispose();

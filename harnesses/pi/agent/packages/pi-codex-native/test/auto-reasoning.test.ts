@@ -98,7 +98,7 @@ test.each([false, true])("Astra effort respects the floor and later user choices
 		],
 	});
 	try {
-		await publishAllSettings(ensureXSettingsRegistry(), { tools: { "pi-codex-native": { autoReasoning: true } } });
+		await publishAllSettings(ensureXSettingsRegistry(), {});
 		await loader.reload();
 		expect(loader.getExtensions().errors).toEqual([]);
 		({ session } = await createAgentSession({
@@ -119,7 +119,7 @@ test.each([false, true])("Astra effort respects the floor and later user choices
 			{ isError: false },
 			{ isError: false },
 		]);
-		await publishAllSettings(ensureXSettingsRegistry(), {});
+		await publishAllSettings(ensureXSettingsRegistry(), { tools: { "pi-codex-native": { autoReasoning: false } } });
 		await session.prompt("Continue with auto reasoning disabled.");
 		expect(session.getActiveToolNames()).not.toContain("change_reasoning");
 	} finally {

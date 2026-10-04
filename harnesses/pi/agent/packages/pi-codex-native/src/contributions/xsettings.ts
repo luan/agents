@@ -47,7 +47,7 @@ const definitions = {
 			"Let Astra adjust effort by work phase, never below your starting level; restore it when the run ends.",
 		category: "tools",
 		type: "boolean",
-		default: false,
+		default: true,
 		apply: "live",
 	},
 	reasoningMode: {
@@ -143,7 +143,7 @@ const definitions = {
 		description: "Enable async user messages even when the model catalog does not advertise them. Root agents only.",
 		category: "tools",
 		type: "boolean",
-		default: false,
+		default: true,
 		apply: "live",
 	},
 	cacheDiagnostics: {
@@ -151,7 +151,7 @@ const definitions = {
 		description: "Show Codex cache status or also write private diagnostic logs.",
 		category: "behavior",
 		type: "enum",
-		default: "off",
+		default: "status",
 		options: [
 			{ value: "off", label: "Off", description: "Disable cache diagnostics." },
 			{ value: "status", label: "Status", description: "Show cache status in the Pi footer." },

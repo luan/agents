@@ -91,6 +91,7 @@ test("fullscreen bubbles do not emit terminal transcript zone markers", () => {
 });
 
 test("compact half-block bubbles toggle live without changing native messages", () => {
+	configureTuiAppearance({ userMessageBubbles: false });
 	const message = new UserMessageComponent("Hello **world** — 你好 👋");
 	const native = message.render(100);
 	const remove = installUserMessageBridge();

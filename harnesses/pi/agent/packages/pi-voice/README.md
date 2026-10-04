@@ -75,12 +75,12 @@ is `pi-voice`; defaults apply when xsettings is absent.
 
 | Setting | Default |
 | --- | --- |
-| Voice (`v3Voice`) | `cove` |
+| Voice (`v3Voice`) | `sol` |
 | Microphone / speaker (`inputDevice`, `outputDevice`) | System default; optional device IDs |
 | Spoken acknowledgements | On |
 | Reconnect voice (`autoResume`) | Off |
 | Refresh voice context (`refreshAfterCompaction`) | On |
-| Context model (`contextModel`) | `openai-codex/gpt-5.6-luna` |
+| Context model (`contextModel`) | `openai-codex/gpt-6-luna` |
 
 Actions `voice.toggle`, `voice.start`, `voice.dictate`, `voice.mute`, and
 `voice.stop` can be bound through the normal actions/keybindings system.
