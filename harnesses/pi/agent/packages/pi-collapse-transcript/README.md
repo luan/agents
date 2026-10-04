@@ -1,9 +1,9 @@
 # @luan.sh/pi-collapse-transcript&nbsp;[<img src="https://pi.luan.sh/icons/pi.svg" width="14" alt="Pi gallery">](https://pi.dev/packages/@luan.sh/pi-collapse-transcript)&nbsp;[<img src="https://pi.luan.sh/icons/npm.svg" width="14" alt="npm">](https://www.npmjs.com/package/@luan.sh/pi-collapse-transcript)
 
 `@luan.sh/pi-collapse-transcript` folds runs of tool calls and thinking blocks in Pi's fullscreen
-transcript into collapsed activity rows after the agent finishes the turn.
-During the turn, thinking and tools stay visible in their original renderers, including
-completed steps and intermediate prose. Previous turns keep their fold state. The row shows the latest
+transcript into collapsed activity rows, including while the agent is working.
+Successful tool output and detailed thinking stay behind expansion. Assistant prose
+and failed tool output stay visible. Previous turns keep their fold state. The row shows the latest
 provider-supplied thinking summary (or tool action when no thinking is available), elapsed time,
 a step count, and a failure count. The entire row is muted with a dotted underline
 that spans the terminal width, including the empty space after the chevron,
@@ -40,14 +40,16 @@ its work on `session_start`:
 
 - In interactive TUI mode it installs a hidden widget (`pi-collapse-transcript.host`)
   that mounts a transcript projection over Pi's chat container.
-- `agent_start` keeps new entries visible until `agent_settled`, including retries
-  and automatic continuations. Finishing an individual tool or model request does not fold anything.
-- A queued user request consumed after a final answer folds the preceding request,
-  even when Pi continues without `agent_settled`. Steering during unfinished work
-  keeps that work visible.
-- In fullscreen mode, completed consecutive `thinking` and tool entries become one
-  `ActivitySection`. Its header shows `Worked for <duration> · summary`, a `N steps` count, and
-  `M failed` when any tool in the run failed. It has no status dot or spinner.
+- In fullscreen mode, consecutive `thinking` and tool entries become one collapsed
+  `ActivitySection` as they arrive. Its header shows `Working for <duration> · summary`,
+  a `N steps` count, and `M failed` when any tool in the run failed.
+- `agent_start` keeps the newest group marked `Working` between tool calls and model
+  requests, including retries and automatic continuations. `agent_settled` changes
+  it to `Worked`; neither event changes the user's expansion choice.
+- A queued user request consumed after a final answer starts a fresh activity boundary,
+  even when Pi continues without `agent_settled`. Steering stays compact too.
+- Failed tool output renders beneath the header even when the group is collapsed.
+  The header has no status dot or spinner.
 - Clicking the row toggles between collapsed and expanded. Expanded content is
   the original components, so tool renderers, thinking Markdown, and libtui's
   scrolling and fold controls behave as they do natively.

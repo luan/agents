@@ -14,7 +14,7 @@ import {
 	SettingsManager,
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
-import { Container, ProcessTerminal, TuiAltScreen } from "@earendil-works/pi-tui";
+import { Container, ProcessTerminal, Text, TuiAltScreen } from "@earendil-works/pi-tui";
 import { theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import transcriptExtension from "../src/extension.ts";
 
@@ -23,7 +23,7 @@ class TestTui extends TuiAltScreen {
 }
 
 test.each(["followUp", "steer"] as const)(
-	"%s keeps the correct request visible without agent settlement",
+	"%s keeps requests compact and live without agent settlement",
 	async (queue) => {
 		initTheme("dark", false);
 		const root = await mkdtemp(join(tmpdir(), "pi-queued-transcript-"));
@@ -109,14 +109,18 @@ test.each(["followUp", "steer"] as const)(
 			noPromptTemplates: true,
 			extensionFactories: [
 				transcriptExtension,
-				(pi) =>
+				(pi) => {
+					pi.on("message_start", (event) => {
+						if (event.message.role === "user") chat.addChild(new Text("User request", 0, 0));
+					});
 					pi.registerTool({
 						name: "fixture",
 						label: "Fixture",
 						description: "Queue boundary fixture",
 						parameters: createReadToolDefinition(root).parameters,
 						execute: async () => ({ content: [{ type: "text", text: "Completed step" }], details: {} }),
-					}),
+					});
+				},
 			],
 		});
 		await loader.reload();
@@ -141,11 +145,13 @@ test.each(["followUp", "steer"] as const)(
 			});
 			await session.prompt("First request");
 			expect(observations).toHaveLength(2);
-			expect(observations[0]).toContain("FIRST REQUEST OUTPUT");
-			if (queue === "followUp") expect(observations[1]).not.toContain("FIRST REQUEST OUTPUT");
-			else expect(observations[1]).toContain("FIRST REQUEST OUTPUT");
-			expect(observations[1]).toContain("SECOND REQUEST OUTPUT");
-			expect(rendered()).not.toContain("SECOND REQUEST OUTPUT");
+			for (const observation of observations) {
+				expect(observation).toContain("Working · read · 1 step");
+				expect(observation).not.toContain("FIRST REQUEST OUTPUT");
+				expect(observation).not.toContain("SECOND REQUEST OUTPUT");
+			}
+			expect(observations[1]).toContain("Worked · read · 1 step");
+			expect(rendered()).not.toContain("Working");
 		} finally {
 			await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 			session.dispose();

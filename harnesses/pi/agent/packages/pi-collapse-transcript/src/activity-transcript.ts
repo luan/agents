@@ -28,6 +28,7 @@ export function activitySummary(entry: ActivityEntry): string {
 
 class ActivitySection extends ComponentStack {
 	private readonly body = new ComponentStack();
+	private readonly failurePreview = new ComponentStack();
 	private readonly activity: ToolActivity;
 	private entries: readonly ActivityEntry[] = [];
 	private clock: MotionMount | undefined;
@@ -51,15 +52,21 @@ class ActivitySection extends ComponentStack {
 		this.setChildren([new Spacer(1), this.activity]);
 	}
 
-	update(entries: readonly ActivityEntry[]): void {
-		if (entries.length === this.entries.length && entries.every((entry, index) => entry === this.entries[index]))
+	update(entries: readonly ActivityEntry[], active: boolean): void {
+		const running = active || entries.some((entry) => entry.running);
+		if (
+			running === this.running &&
+			entries.length === this.entries.length &&
+			entries.every((entry, index) => entry === this.entries[index])
+		)
 			return;
 		this.entries = entries;
 		this.body.setChildren(entries.map((entry) => entry.component));
+		// Failures stay visible without expanding successful output or thinking.
+		this.failurePreview.setChildren(entries.filter((entry) => entry.failed).map((entry) => entry.component));
 		// Keep the model's intent visible while tools run and after they finish.
 		const latest =
 			entries.filter((entry) => entry.kind === "thinking" && entry.summary.trim()).at(-1) ?? entries.at(-1)!;
-		const running = entries.some((entry) => entry.running);
 		const failures = entries.filter((entry) => entry.failed).length;
 		this.summary = activitySummary(latest);
 		this.running = running;
@@ -77,7 +84,7 @@ class ActivitySection extends ComponentStack {
 				marker: false,
 			},
 			running,
-			payload: { kind: "component", preview: EMPTY, full: this.body },
+			payload: { kind: "component", preview: this.failurePreview, full: this.body },
 		});
 	}
 
@@ -98,7 +105,7 @@ class ActivitySection extends ComponentStack {
 
 	private renderHeader(width: number): string[] {
 		if (width <= 0) return [];
-		const elapsed = this.timings.elapsed(this.entries, this.now());
+		const elapsed = this.timings.elapsed(this.entries, this.now(), this.running);
 		const duration = elapsed === undefined ? "" : ` for ${formatActivityDuration(elapsed)}`;
 		const label = `  ${this.running ? "Working" : "Worked"}${duration} · ${this.theme.italic(this.summary)}`;
 		const steps = `${this.entries.length} ${this.entries.length === 1 ? "step" : "steps"}`;
@@ -111,8 +118,6 @@ class ActivitySection extends ComponentStack {
 		this.activity.dispose();
 	}
 }
-
-const EMPTY: Component = { render: () => [], invalidate() {} };
 
 /** Fold consecutive tools/thinking, leaving assistant text and every other message in place. */
 export class ActivityTranscript extends ComponentStack {
@@ -130,7 +135,7 @@ export class ActivityTranscript extends ComponentStack {
 	}
 
 	beginTurn(): void {
-		// Retries and automatic continuations belong to the same visible run.
+		// Retries and automatic continuations belong to the same activity group.
 		this.completedBeforeTurn ??= new Set(this.entries().map((entry) => entry.key));
 		this.requestRender();
 	}
@@ -144,7 +149,7 @@ export class ActivityTranscript extends ComponentStack {
 		const children: Component[] = [];
 		const retained = new Set<object>();
 		let pending: ActivityEntry[] = [];
-		const flush = () => {
+		const flush = (active = false) => {
 			if (!pending.length) return;
 			const key = pending[0]!.key;
 			let section = this.sections.get(key);
@@ -152,20 +157,20 @@ export class ActivityTranscript extends ComponentStack {
 				section = new ActivitySection(this.theme, this.requestRender, this.timings, this.now);
 				this.sections.set(key, section);
 			}
-			section.update(pending);
+			section.update(pending, active);
 			children.push(section);
 			retained.add(key);
 			pending = [];
 		};
 		for (const entry of this.entries()) {
-			if (entry.kind !== "content" && (!this.completedBeforeTurn || this.completedBeforeTurn.has(entry.key)))
-				pending.push(entry);
+			if (entry.kind !== "content") pending.push(entry);
 			else {
 				flush();
 				children.push(entry.component);
 			}
 		}
-		flush();
+		const beforeTurn = this.completedBeforeTurn;
+		flush(beforeTurn !== undefined && pending.some((entry) => !beforeTurn.has(entry.key)));
 		for (const [key, section] of this.sections) {
 			if (retained.has(key)) continue;
 			section.dispose();

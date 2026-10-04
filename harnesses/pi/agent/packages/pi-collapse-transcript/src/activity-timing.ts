@@ -33,7 +33,7 @@ export class ActivityTimings {
 		}
 	}
 
-	elapsed(entries: readonly TranscriptEntry[], now: number): number | undefined {
+	elapsed(entries: readonly TranscriptEntry[], now: number, running = false): number | undefined {
 		let start = Number.POSITIVE_INFINITY;
 		let end = Number.NEGATIVE_INFINITY;
 		for (const entry of entries) {
@@ -44,7 +44,7 @@ export class ActivityTimings {
 						? this.tools.get(entry.toolCallId)
 						: undefined;
 			if (!interval) continue;
-			const finished = entry.kind !== "content" && entry.running ? now : interval.end;
+			const finished = running || (entry.kind !== "content" && entry.running) ? now : interval.end;
 			if (finished === undefined) continue;
 			start = Math.min(start, interval.start);
 			end = Math.max(end, finished);

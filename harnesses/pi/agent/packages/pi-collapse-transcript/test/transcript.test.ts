@@ -119,7 +119,7 @@ test("native thinking and tool rows collapse together and expand with their orig
 	expect(lines(f.document).join("\n")).toContain("original output");
 });
 
-test("the active turn stays visible across completed tools, prose, and continuations until settlement", () => {
+test("active work stays compact across tools and continuations while prose and previous folds stay visible", () => {
 	const f = fixture();
 	f.chat.addChild(
 		new AssistantMessageComponent(
@@ -133,25 +133,32 @@ test("the active turn stays visible across completed tools, prose, and continuat
 	thought.updateContent(source, true);
 	f.chat.addChild(thought);
 	let rendered = lines(f.document).join("\n");
-	expect(rendered).toContain("Live reasoning.");
+	expect(rendered).toContain("Working for 0s · Current work · 1 step");
+	expect(rendered).not.toContain("Live reasoning.");
 	expect(rendered).not.toContain("Historical details.");
 	thought.updateContent(source, false);
 	const tool = new ToolExecutionComponent("read", "live", {}, undefined, undefined, f.tui, "/tmp");
 	tool.markExecutionStarted();
 	tool.updateResult({ content: [{ type: "text", text: "Live tool progress" }], isError: false }, true);
 	f.chat.addChild(tool);
-	expect(lines(f.document).join("\n")).toContain("Live tool progress");
+	rendered = lines(f.document).join("\n");
+	expect(rendered).toContain("Working · Current work · 2 steps");
+	expect(rendered).not.toContain("Live tool progress");
 	tool.updateResult({ content: [{ type: "text", text: "Completed tool output" }], isError: false });
+	// The group stays live between tool completion and the next model request.
+	expect(lines(f.document).join("\n")).toContain("Working · Current work · 2 steps");
 	f.chat.addChild(new AssistantMessageComponent(message([{ type: "text", text: "Checking the result." }])));
-	// Automatic continuation must not mark the earlier steps as historical.
+	// Automatic continuation must not reveal the earlier output.
 	f.projection.beginTurn();
 	f.chat.addChild(
 		new AssistantMessageComponent(message([{ type: "thinking", thinking: "**Verify result**\n\nFollow-up detail." }])),
 	);
 	rendered = lines(f.document).join("\n");
-	expect(rendered).toContain("Live reasoning.");
-	expect(rendered).toContain("Completed tool output");
-	expect(rendered).toContain("Follow-up detail.");
+	expect(rendered).not.toContain("Live reasoning.");
+	expect(rendered).not.toContain("Completed tool output");
+	expect(rendered).not.toContain("Follow-up detail.");
+	expect(rendered).toContain("Worked · Current work · 2 steps");
+	expect(rendered).toContain("Working · Verify result · 1 step");
 	expect(rendered).toContain("Checking the result.");
 	f.projection.finishTurn();
 	rendered = lines(f.document).join("\n");
@@ -160,6 +167,7 @@ test("the active turn stays visible across completed tools, prose, and continuat
 	expect(rendered).not.toContain("Follow-up detail.");
 	expect(rendered).toContain("Current work · 2 steps");
 	expect(rendered).toContain("Verify result · 1 step");
+	expect(rendered).not.toContain("Working");
 	expect(rendered).toContain("Checking the result.");
 	// Starting another turn leaves the finished folds alone.
 	f.projection.beginTurn();
@@ -169,6 +177,7 @@ test("the active turn stays visible across completed tools, prose, and continuat
 
 test("streamed updates retain expansion and update the latest thinking heading", () => {
 	const f = fixture();
+	f.projection.beginTurn();
 	const thought = new AssistantMessageComponent();
 	const source = message([{ type: "thinking", thinking: "**First step**\n\nDetails." }]);
 	thought.updateContent(source, true);
@@ -182,7 +191,13 @@ test("streamed updates retain expansion and update the latest thinking heading",
 	expect(updated).toContain("Second step");
 	expect(updated).toContain("More detail.");
 	thought.updateContent(source, false);
+	f.projection.beginTurn();
+	expect(lines(f.document).join("\n")).toContain("More detail.");
+	f.projection.finishTurn();
+	expect(lines(f.document).join("\n")).toContain("More detail.");
 	expect(lines(f.document).join("\n")).not.toContain("●");
+	click(f.projection, 1);
+	expect(lines(f.document).join("\n")).not.toContain("More detail.");
 	f.unmount();
 });
 
@@ -210,6 +225,7 @@ test("tools retain the latest thinking summary while running and after completio
 
 test("tool summaries use live semantic fields without flattening or pre-truncating custom renderers", () => {
 	const f = fixture();
+	f.projection.beginTurn();
 	let headerRenders = 0;
 	let payloadRenders = 0;
 	const detail = `${"long/path/".repeat(12)}transcript.ts`;
@@ -263,8 +279,9 @@ test("tool summaries use live semantic fields without flattening or pre-truncati
 	activity.dispose();
 });
 
-test("prose stays visible and separates folds; failure counts survive collapse", () => {
+test("prose separates folds and failed tools stay visible without expanding reasoning", () => {
 	const f = fixture();
+	f.projection.beginTurn();
 	f.chat.addChild(
 		new AssistantMessageComponent(
 			message([
@@ -281,7 +298,9 @@ test("prose stays visible and separates folds; failure counts survive collapse",
 	expect(compact).toContain("Check files");
 	expect(compact).toContain("1 failed");
 	expect(compact).not.toContain("Longer thought.");
-	expect(compact).not.toContain("build failure details");
+	expect(compact).toContain("build failure details");
+	f.projection.finishTurn();
+	expect(lines(f.document).join("\n")).toContain("build failure details");
 	f.unmount();
 });
 
@@ -381,17 +400,27 @@ test("muted, underlined rows retain saved wall time across parallel tools and re
 	timings.load(branch);
 	let now = 11_000;
 	const f = fixture(timings, () => now, styledTheme);
+	f.projection.beginTurn();
 	f.chat.addChild(new AssistantMessageComponent(source));
+	const tools: ToolExecutionComponent[] = [];
 	for (const id of ["one", "two"]) {
 		const tool = new ToolExecutionComponent("read", id, {}, undefined, undefined, f.tui, "/tmp");
 		tool.markExecutionStarted();
 		f.chat.addChild(tool);
+		tools.push(tool);
 	}
 	expect(lines(f.document).join("\n")).toContain("Working for 10s · Checking index baseline · 3 steps");
 	now = 66_000;
 	expect(lines(f.document).join("\n")).toContain("Working for 1m 5s · Checking index baseline · 3 steps");
-	f.unmount();
 	branch.push(result("one", 101_000), result("two", 417_000));
+	timings.load(branch);
+	for (const tool of tools) tool.updateResult({ content: [], isError: false });
+	now = 418_000;
+	// The live timer includes gaps between completed tools and the next request.
+	expect(lines(f.document).join("\n")).toContain("Working for 6m 57s · Checking index baseline · 3 steps");
+	f.projection.finishTurn();
+	expect(lines(f.document).join("\n")).toContain("Worked for 6m 56s · Checking index baseline · 3 steps");
+	f.unmount();
 	// Rebuilding native components must use saved timestamps, not their mount time.
 	timings.load(branch);
 	const reloaded = fixture(timings, () => 999_000, styledTheme);
