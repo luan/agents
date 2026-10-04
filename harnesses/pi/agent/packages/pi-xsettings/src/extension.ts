@@ -38,6 +38,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 	const store = new XSettingsStore();
 	const sync = new PiSettingsSync(store.path);
 	let stopWatching: (() => void) | undefined;
+	let disposed = false;
 	let syncContext: ExtensionContext | undefined;
 	let syncNotice: string | undefined;
 	let lastNotified: string | undefined;
@@ -50,7 +51,6 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 	let panelTabOpen = false;
 	let removeEmptyAction: (() => void) | undefined;
 	let unregisterSidePanelProvider: (() => void) | undefined;
-	let activeSession: ExtensionContext["sessionManager"] | undefined;
 	let activeScreen: XSettingsScreen | undefined;
 	const unregisterPresentationSettings = registerXSettingsPresentationSettings((settings) => {
 		presentation = settings.presentation;
@@ -84,7 +84,9 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 			pi.appendEntry(SESSION_SETTING_ENTRY, sessionSettingRecord(edit));
 		}
 		const result = await sync.reconcile(sessionEdit ? undefined : edit);
+		if (disposed) return result;
 		await publishAllSettings(registry, result.document);
+		if (disposed) return result;
 		reportSync(
 			result.conflicts.length > 0
 				? `Settings conflict: ${result.conflicts.join(", ")}. Both files were preserved for these settings. Choose a value in /xsettings or make both files agree.`
@@ -98,6 +100,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 
 	async function initialize(): Promise<void> {
 		await store.load();
+		if (disposed) return;
 		stopWatching = watchSettings(
 			[store.path, sync.jsonPath],
 			async () => {
@@ -115,8 +118,9 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 	const detachRegistration = registry.onRegister((registration) => {
 		const pending = initialization.then(async () => {
 			const document = await store.load();
+			if (disposed) return;
 			await registry.publish(registration.namespace, resolveRegistrationValues(registration, document));
-			if (syncContext)
+			if (!disposed && syncContext)
 				publishSessionSettings(
 					registry,
 					syncContext.sessionManager.getSessionId(),
@@ -145,6 +149,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 		}
 		await initialization;
 		await settleRegistrations();
+		if (disposed) return;
 		if (presentation === "side-panel" && panel) {
 			if (panelTabOpen) {
 				panel.activate(SETTINGS_TAB_ID);
@@ -213,6 +218,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 		panelTabOpen = false;
 		const editor = panelEditor;
 		panelEditor = undefined;
+		if (disposed) return;
 		void editor.finish().catch((error) => {
 			panelContext?.ui.notify(
 				`Could not apply settings: ${error instanceof Error ? error.message : String(error)}`,
@@ -232,12 +238,13 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 		syncContext = ctx;
 		await initialization;
 		await settleRegistrations();
+		if (disposed) return;
 		await reconcile();
+		if (disposed) return;
 		applyConfiguredTools(pi);
 		reportSync(syncNotice);
 		if (ctx.mode !== "tui" || !ctx.hasUI) return;
 		panelContext = ctx;
-		activeSession = ctx.sessionManager;
 		unregisterEffort?.();
 		unregisterEffort = registerEffortActions(pi);
 		unregisterAction?.();
@@ -287,33 +294,23 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("session_tree", () => applyConfiguredTools(pi));
 	pi.on("before_agent_start", async (_event, ctx) => {
-		const document = sessionSettingsDocument(registry, await store.load(), ctx.sessionManager.getBranch());
+		const stored = await store.load();
+		if (disposed) return;
+		const document = sessionSettingsDocument(registry, stored, ctx.sessionManager.getBranch());
 		publishSessionSettings(registry, ctx.sessionManager.getSessionId(), document);
 	});
-	pi.on("session_shutdown", async (event, context) => {
+	pi.on("session_shutdown", async (_event, context) => {
+		// Every shutdown replaces this runtime; invalidate captures before yielding.
+		disposed = true;
+		syncContext = undefined;
+		panelContext = undefined;
+		stopWatching?.();
+		stopWatching = undefined;
 		if (registry.sessionValues) delete registry.sessionValues[context.sessionManager.getSessionId()];
-		if (
-			syncContext?.sessionManager === context.sessionManager &&
-			(event.reason === "reload" || event.reason === "quit")
-		) {
-			await initialization;
-			stopWatching?.();
-			stopWatching = undefined;
-			try {
-				await reconcile();
-			} catch (error) {
-				reportSync(`Could not synchronize settings: ${error instanceof Error ? error.message : String(error)}`);
-			}
-			syncContext = undefined;
-		}
-		if (context.mode !== "tui" || !context.hasUI || activeSession !== context.sessionManager) return;
-		if (event.reason !== "reload" && event.reason !== "quit") return;
 		unregisterSidePanelProvider?.();
 		unregisterSidePanelProvider = undefined;
 		closePanelEditor();
 		panel = undefined;
-		panelContext = undefined;
-		activeSession = undefined;
 		detachShortcuts();
 		detachRegistration();
 		unregisterTuiSettings();
@@ -325,5 +322,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 		unregisterEffort = undefined;
 		unregisterCursorAction?.();
 		unregisterCursorAction = undefined;
+		await initialization;
+		await sync.reconcile();
 	});
 }

@@ -39,17 +39,22 @@ export function watchSettings(
 		}
 	}
 	let queued: NodeJS.Immediate | undefined;
+	let stopped = false;
+	const reportError = (error: Error): void => {
+		if (!stopped) report(error);
+	};
 	const queueRefresh = () => {
-		if (queued) return;
+		if (stopped || queued) return;
 		queued = setImmediate(() => {
 			queued = undefined;
-			void refresh().catch((error: Error) => report(error));
+			if (!stopped) void refresh().catch(reportError);
 		});
 	};
 	const watchers: FSWatcher[] = [];
 	try {
 		for (const [directory, names] of directories) {
 			const watcher = watch(directory, { persistent: false }, (event, filename) => {
+				if (stopped) return;
 				try {
 					// Bun 1.3 may report only the temp filename for an atomic rename. Check watched files
 					// so unrelated renames, including our own lock, do not trigger reconciliation.
@@ -62,12 +67,12 @@ export function watchSettings(
 					}
 					if (filename !== null && !names.has(filename.toString()) && (event !== "rename" || !changed)) return;
 				} catch (error) {
-					report(error as Error);
+					reportError(error as Error);
 					return;
 				}
 				queueRefresh();
 			});
-			watcher.on("error", report);
+			watcher.on("error", reportError);
 			watchers.push(watcher);
 		}
 	} catch (error) {
@@ -77,6 +82,7 @@ export function watchSettings(
 	// Native watchers may miss a replacement during startup. Reconcile once after subscribing.
 	queueRefresh();
 	return () => {
+		stopped = true;
 		if (queued) clearImmediate(queued);
 		for (const watcher of watchers) watcher.close();
 	};
