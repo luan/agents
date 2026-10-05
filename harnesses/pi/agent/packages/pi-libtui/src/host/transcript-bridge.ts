@@ -4,6 +4,7 @@ import { sanitizeTuiFieldPreview } from "../content/terminal-text.ts";
 
 export type TranscriptEntry =
 	| { kind: "content"; key: object; component: Component }
+	| { kind: "compaction"; key: object; component: Component; summary: string; tokensBefore: number }
 	| {
 			kind: "thinking";
 			key: object;
@@ -50,8 +51,11 @@ interface NativeTool extends Component {
 interface NativeContainer extends Component {
 	children: Component[];
 }
+interface NativeCompaction extends Component {
+	message: { role: "compactionSummary"; summary: string; tokensBefore: number };
+}
 
-// type-boundary: Pi 0.84–0.85 private transcript fields; the shape guards below narrow each native node before projection.
+// type-boundary: Pi 1.0 private transcript fields; the shape guards below narrow each native node before projection.
 type NativeValue = unknown;
 const INSTALLATION = Symbol.for("pi-libtui/transcript-projection/v1");
 
@@ -96,6 +100,18 @@ function tool(value: Component): value is NativeTool {
 		typeof node.executionStarted === "boolean" &&
 		(node.result === undefined || (record(node.result) && typeof node.result.isError === "boolean")) &&
 		(node.resultRendererComponent === undefined || component(node.resultRendererComponent))
+	);
+}
+
+function compaction(value: Component): value is NativeCompaction {
+	const message: NativeValue = Reflect.get(value, "message");
+	return (
+		record(message) &&
+		message.role === "compactionSummary" &&
+		typeof message.summary === "string" &&
+		typeof message.tokensBefore === "number" &&
+		Number.isFinite(message.tokensBefore) &&
+		message.tokensBefore >= 0
 	);
 }
 
@@ -152,6 +168,16 @@ class NativeEntries {
 
 	read(node: Component): readonly TranscriptEntry[] {
 		if (assistant(node)) return this.readAssistant(node);
+		if (compaction(node))
+			return [
+				{
+					kind: "compaction",
+					key: node,
+					component: node,
+					summary: node.message.summary,
+					tokensBefore: node.message.tokensBefore,
+				},
+			];
 		if (!tool(node)) return [{ kind: "content", key: node, component: node }];
 		const summary = toolLabel(node);
 		const previous = this.tools.get(node);
@@ -224,7 +250,7 @@ class NativeEntries {
 
 /**
  * Project Pi's chat container without changing messages or its mutation targets.
- * Pi 0.84–0.85 mounts [header, resources, chat] as the first document child in
+ * Pi 1.0 mounts [header, resources, chat] as the first document child in
  * both modes. Fail open on another shape; replace this bridge when Pi exposes a transcript API.
  */
 export function mountTranscriptProjection(

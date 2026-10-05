@@ -1,6 +1,7 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import {
 	AssistantMessageComponent,
+	CompactionSummaryMessageComponent,
 	initTheme,
 	type SessionEntry,
 	ToolExecutionComponent,
@@ -201,6 +202,67 @@ test("streamed updates retain expansion and update the latest thinking heading",
 	f.unmount();
 });
 
+test("compaction becomes one full-width divider with an independent summary disclosure", () => {
+	const f = fixture();
+	f.chat.addChild(new Text("Earlier conversation", 0, 0));
+	const native = new CompactionSummaryMessageComponent({
+		role: "compactionSummary",
+		summary: "**Saved context**\n\nOriginal summary content.",
+		tokensBefore: 257_174,
+		timestamp: 0,
+	});
+	// Pi's global tool expansion must not expand our context disclosure.
+	native.setExpanded(true);
+	f.chat.addChild(native);
+	const collapsed = lines(f.document, 100);
+	expect(collapsed).toHaveLength(2);
+	expect(collapsed[1]).toStartWith("── Context compacted · 257,174 tokens before ");
+	expect(collapsed[1]).toContain("───");
+	expect(visibleWidth(collapsed[1]!)).toBe(100);
+	expect(collapsed.join("\n")).not.toContain("Original summary content");
+	expect(collapsed.join("\n")).not.toContain("[compaction]");
+	click(f.projection, 1);
+	expect(lines(f.document).join("\n")).toContain("Original summary content.");
+	f.chat.addChild(new Text("Work continues", 0, 0));
+	expect(lines(f.document).join("\n")).toContain("Original summary content.");
+	click(f.projection, 1);
+	expect(lines(f.document).join("\n")).not.toContain("Original summary content.");
+	for (const width of [1, 2, 8, 40, 100]) {
+		const divider = lines(f.projection, width)[1]!;
+		expect(visibleWidth(divider)).toBe(width);
+	}
+	f.unmount();
+	expect(f.chat.children).toContain(native);
+	expect(lines(f.document).join("\n")).toContain("[compaction]");
+});
+
+test("compaction separates activity without resetting an existing open fold", () => {
+	const f = fixture();
+	f.chat.addChild(
+		new AssistantMessageComponent(message([{ type: "thinking", thinking: "**Before**\n\nEarlier detail." }])),
+	);
+	lines(f.document);
+	click(f.projection, 1);
+	f.chat.addChild(
+		new CompactionSummaryMessageComponent({
+			role: "compactionSummary",
+			summary: "Summary.",
+			tokensBefore: 100,
+			timestamp: 0,
+		}),
+	);
+	f.chat.addChild(
+		new AssistantMessageComponent(message([{ type: "thinking", thinking: "**After**\n\nLater detail." }])),
+	);
+	const rendered = lines(f.document).join("\n");
+	expect(rendered).toContain("Earlier detail.");
+	expect(rendered).toContain("Before · 1 step");
+	expect(rendered).toContain("After · 1 step");
+	expect(rendered).not.toContain("Later detail.");
+	expect(rendered).not.toContain("Summary.");
+	f.unmount();
+});
+
 test("tools retain the latest thinking summary while running and after completion", () => {
 	const f = fixture();
 	const thought = new AssistantMessageComponent(
@@ -279,7 +341,7 @@ test("tool summaries use live semantic fields without flattening or pre-truncati
 	activity.dispose();
 });
 
-test("prose separates folds and failed tools stay visible without expanding reasoning", () => {
+test("prose separates folds and tool failures stay inside expansion after completion", () => {
 	const f = fixture();
 	f.projection.beginTurn();
 	f.chat.addChild(
@@ -296,11 +358,51 @@ test("prose separates folds and failed tools stay visible without expanding reas
 	const compact = lines(f.document).join("\n");
 	expect(compact).toContain("Here is my answer.");
 	expect(compact).toContain("Check files");
-	expect(compact).toContain("1 failed");
+	expect(compact).toContain("Working · build · 1 step");
+	expect(compact).not.toContain("failed");
 	expect(compact).not.toContain("Longer thought.");
-	expect(compact).toContain("build failure details");
+	expect(compact).not.toContain("Failed");
+	expect(compact).not.toContain("build failure details");
 	f.projection.finishTurn();
+	const completed = lines(f.document);
+	expect(completed.join("\n")).toContain("Worked · build · 1 step");
+	expect(completed.join("\n")).not.toContain("Failed");
+	expect(completed.join("\n")).not.toContain("build failure details");
+	click(
+		f.projection,
+		completed.findIndex((row) => row.includes("Worked · build")),
+	);
 	expect(lines(f.document).join("\n")).toContain("build failure details");
+	f.unmount();
+});
+
+test.each([1, 10])("%i failed calls stay folded while work continues and retain complete nested output", (count) => {
+	const f = fixture();
+	f.projection.beginTurn();
+	const output = `Partially edited files\n${"@@ patch diff\n+added line\n-removed line\n".repeat(30)}Script error: failed patch`;
+	for (let index = 0; index < count; index++) {
+		const tool = new ToolExecutionComponent("codemode", `failed-${index}`, {}, undefined, undefined, f.tui, "/tmp");
+		tool.updateResult({ content: [{ type: "text", text: output }], isError: true });
+		f.chat.addChild(tool);
+	}
+	const compact = lines(f.document);
+	expect(compact.filter(Boolean)).toHaveLength(1);
+	expect(compact.join("\n")).toContain("Working · codemode");
+	expect(compact.join("\n")).not.toContain("failed");
+	expect(compact.join("\n")).not.toContain("Failed");
+	expect(compact.join("\n")).not.toContain("Partially edited");
+	expect(compact.join("\n")).not.toContain("patch diff");
+	expect(compact.join("\n")).not.toContain("Script error");
+	const continuing = new ToolExecutionComponent("read", "continuing", {}, undefined, undefined, f.tui, "/tmp");
+	continuing.markExecutionStarted();
+	f.chat.addChild(continuing);
+	expect(lines(f.document).join("\n")).toContain("Working · read");
+	expect(lines(f.document).filter(Boolean)).toHaveLength(1);
+	click(f.projection, 1);
+	expect(lines(f.document).join("\n")).toContain("Partially edited files");
+	expect(lines(f.document).join("\n")).toContain("patch diff");
+	click(f.projection, 1);
+	expect(lines(f.document).filter(Boolean)).toHaveLength(1);
 	f.unmount();
 });
 

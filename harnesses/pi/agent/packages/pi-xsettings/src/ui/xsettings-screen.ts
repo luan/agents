@@ -61,6 +61,18 @@ interface SidebarEntry {
 	fieldId?: string;
 }
 
+function sidebarEntryId(entry: SidebarEntry): string {
+	return entry.kind === "page" ? `page:${entry.page.id}` : `section:${entry.fieldId}`;
+}
+
+export interface SettingsScreenLocation {
+	readonly page: SettingPage;
+	readonly fieldId?: string;
+	readonly sidebarId: string;
+	readonly focus: "content" | "sidebar" | "search";
+	readonly query: string;
+}
+
 export type SettingsScreenField = SettingField & {
 	apply?: SettingApply;
 	category: SettingCategory;
@@ -339,6 +351,8 @@ export class XSettingsScreen extends ComponentStack {
 		private readonly requestRender: () => void = () => {},
 		private readonly sidebarToggleKey?: KeyId,
 		private readonly onPreview?: (id: string, value: SettingValue) => void,
+		initialLocation?: SettingsScreenLocation,
+		private readonly onDispose?: (screen: XSettingsScreen) => void,
 	) {
 		super([], { height, anchorLastChild: true });
 		this.fields = [...fields];
@@ -352,9 +366,14 @@ export class XSettingsScreen extends ComponentStack {
 				this.pageColumns.setSearchActive(false);
 			},
 		);
-		this.activePage = pageFor(
-			fields.find((field) => field.id === initialFieldId) ?? fields[0] ?? { category: "appearance" },
-		);
+		const initialField = fields.find((field) => field.id === initialFieldId);
+		const location = initialField ? undefined : initialLocation;
+		this.activePage = initialField ? pageFor(initialField) : (location?.page ?? "ui");
+		if (location) {
+			this.search.setValue(location.query);
+			this.searchActive = location.focus === "search";
+			this.sidebarFocused = location.focus !== "content";
+		}
 		this.pageColumns = new PageColumns(
 			theme,
 			() => this.activePage,
@@ -370,7 +389,23 @@ export class XSettingsScreen extends ComponentStack {
 			(width) => this.contentNavigationHint(width),
 			requestRender,
 		);
-		this.rebuild(initialFieldId);
+		this.rebuild(initialField?.id ?? location?.fieldId);
+		if (location) {
+			const cursor = this.sidebarEntries().findIndex((entry) => sidebarEntryId(entry) === location.sidebarId);
+			if (cursor >= 0) this.sidebarCursor = cursor;
+		}
+		this.pageColumns.setSearchActive(this.searchActive);
+	}
+
+	getLocation(): SettingsScreenLocation {
+		const entry = this.sidebarEntries()[this.sidebarCursor];
+		return {
+			page: this.activePage,
+			fieldId: this.editor.getSelectedFieldId(),
+			sidebarId: entry ? sidebarEntryId(entry) : `page:${this.activePage}`,
+			focus: this.searchActive ? "search" : this.sidebarFocused ? "sidebar" : "content",
+			query: this.search.getValue(),
+		};
 	}
 
 	private keyHint(key: KeyId | undefined): string {
@@ -571,6 +606,7 @@ export class XSettingsScreen extends ComponentStack {
 	}
 
 	dispose(): void {
+		this.onDispose?.(this);
 		this.editor?.dispose();
 	}
 

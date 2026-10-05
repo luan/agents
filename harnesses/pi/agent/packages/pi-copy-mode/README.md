@@ -239,7 +239,8 @@ the cursor and selection as screen decorations, and talks to other extensions
 only through the shared `@luan.sh/pi-libtui` selection, folding, and mouse registries.
 Annotations live in their own feature directory and register alongside copy
 mode under the same ownership claim. If two copies load, only the owner
-registers features; it releases ownership on reload or quit. The annotation
+registers features; it releases ownership on every runtime shutdown, including
+new sessions, resume, fork, reload, and quit. The annotation
 store owns drafts; the annotation composition root owns prompt transforms,
 rendering, and optional developer-message contributions. No model-facing tool
 or native executable is registered.

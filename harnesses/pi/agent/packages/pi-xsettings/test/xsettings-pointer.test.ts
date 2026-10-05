@@ -5,7 +5,7 @@ import { icon, tuiTheme } from "@luan.sh/pi-libtui";
 import type { TuiMouseEvent } from "@luan.sh/pi-libtui/mouse";
 import type { SettingValue } from "../src/protocol/settings.ts";
 import { SettingsEditor } from "../src/ui/settings-editor.ts";
-import { type SettingsScreenField, XSettingsScreen } from "../src/ui/xsettings-screen.ts";
+import { type SettingsScreenField, type SettingsScreenLocation, XSettingsScreen } from "../src/ui/xsettings-screen.ts";
 
 const theme = {
 	bold: (text: string) => text,
@@ -291,7 +291,71 @@ describe("xsettings shared pointer composition", () => {
 		expect(changes).toEqual([["terminal", true]]);
 	});
 
-	test("page sidebar and contextual panel hints use shared components", () => {
+	test.each(["content", "sidebar", "search"] as const)("restores the last location with %s focus", (focus) => {
+		initTheme("dark", false);
+		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
+		const rows: ReadonlyArray<readonly [string, SettingsScreenField["category"], string, string]> = [
+			["theme", "appearance", "Style", "Theme"],
+			["compaction", "behavior", "Compaction", "Compaction enabled"],
+			["budget", "behavior", "Compaction", "Compaction budget"],
+		];
+		const fields: SettingsScreenField[] = rows.map(([id, category, section, label]) => ({
+			id,
+			category,
+			section,
+			label,
+			description: label,
+			storagePath: [id],
+			type: "boolean",
+			value: true,
+			defaultValue: false,
+			configured: true,
+		}));
+		const resets: string[] = [];
+		let remembered: SettingsScreenLocation | undefined;
+		const open = (location = remembered) =>
+			new XSettingsScreen(
+				fields,
+				theme,
+				() => {},
+				(id) => resets.push(id),
+				() => {},
+				24,
+				[],
+				undefined,
+				undefined,
+				() => {},
+				undefined,
+				undefined,
+				location,
+				(closed) => {
+					remembered = closed.getLocation();
+				},
+			);
+		const screen = open();
+		for (let page = 0; page < 5; page++) screen.handleInput("l");
+		screen.handleInput("j");
+		if (focus === "sidebar") {
+			screen.toggleCursor();
+			screen.handleInput("k");
+		}
+		if (focus === "search") {
+			screen.handleInput("/");
+			screen.handleInput("budget");
+		}
+		const location = screen.getLocation();
+		expect(location).toMatchObject({ page: "behavior", fieldId: "budget", focus });
+		screen.dispose();
+		expect(remembered).toEqual(location);
+		const reopened = open();
+		expect(reopened.getLocation()).toEqual(location);
+		expect(reopened.render(80).map(stripTerminalSequences).join("\n")).toContain("Compaction budget");
+		reopened.handleInput("\x7f");
+		expect(resets).toEqual(focus === "content" ? ["budget"] : []);
+		reopened.dispose();
+	});
+
+	test("opens on UI regardless of field order and supports sidebar navigation", () => {
 		initTheme("dark", false);
 		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 		const resets: string[] = [];
@@ -307,7 +371,7 @@ describe("xsettings shared pointer composition", () => {
 				type: "boolean",
 				value: false,
 				defaultValue: false,
-				configured: false,
+				configured: true,
 			},
 			{
 				id: "behavior",
@@ -323,7 +387,7 @@ describe("xsettings shared pointer composition", () => {
 			},
 		];
 		const screen = new XSettingsScreen(
-			fields,
+			[...fields].reverse(),
 			theme,
 			() => {},
 			(id) => resets.push(id),
@@ -334,6 +398,10 @@ describe("xsettings shared pointer composition", () => {
 		);
 
 		let lines = screen.render(80).map(stripTerminalSequences);
+		expect(lines.join("\n")).toContain("Appearance field");
+		expect(lines.join("\n")).not.toContain("Behavior field");
+		screen.handleInput("\x7f");
+		expect(resets.splice(0)).toEqual(["appearance"]);
 		expect(lines[0]).toStartWith(`${icon("search")} Search...`);
 		expect(lines.some((line) => line.startsWith(`${icon("appearance")} UI`))).toBe(true);
 		expect(lines.some((line) => line.startsWith(`${icon("edit")} Editor`))).toBe(true);

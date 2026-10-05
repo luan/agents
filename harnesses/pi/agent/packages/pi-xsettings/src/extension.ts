@@ -30,9 +30,21 @@ import { publishAllSettings, resolveRegistrationValues } from "./runtime/setting
 import { watchSettings } from "./runtime/settings-watch.ts";
 import { applyConfiguredTools } from "./runtime/tool-selection.ts";
 import { XSettingsEditorSession } from "./ui/editor-session.ts";
-import type { XSettingsScreen } from "./ui/xsettings-screen.ts";
+import type { SettingsScreenLocation, XSettingsScreen } from "./ui/xsettings-screen.ts";
 
 const SETTINGS_TAB_ID = "pi-xsettings.settings";
+const NAVIGATION_KEY = Symbol.for("pi-xsettings/navigation/v1");
+
+interface NavigationMemory {
+	location?: SettingsScreenLocation;
+}
+
+// Only this package writes this versioned slot. Keep navigation, never runtime contexts, across reloads.
+function settingsNavigationMemory(): NavigationMemory {
+	const host = globalThis as typeof globalThis & { [NAVIGATION_KEY]?: NavigationMemory };
+	host[NAVIGATION_KEY] ??= {};
+	return host[NAVIGATION_KEY];
+}
 
 export default function xsettingsExtension(pi: ExtensionAPI): void {
 	const store = new XSettingsStore();
@@ -52,6 +64,12 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 	let removeEmptyAction: (() => void) | undefined;
 	let unregisterSidePanelProvider: (() => void) | undefined;
 	let activeScreen: XSettingsScreen | undefined;
+	const navigation = settingsNavigationMemory();
+	function releaseScreen(screen = activeScreen): void {
+		if (!screen || screen !== activeScreen) return;
+		navigation.location = screen.getLocation();
+		activeScreen = undefined;
+	}
 	const unregisterPresentationSettings = registerXSettingsPresentationSettings((settings) => {
 		presentation = settings.presentation;
 		if (presentation === "fullscreen") closePanelEditor();
@@ -168,6 +186,8 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 							heightOffset: 1,
 							requestRender: () => host.requestRender(),
 							sidebarToggleKey,
+							location: navigation.location,
+							onDispose: releaseScreen,
 						});
 						activeScreen = screen;
 						return screen;
@@ -183,7 +203,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 			(tui, theme, _keybindings, done) => {
 				const dialogs = new DialogOverlayHost(tui, theme);
 				const close = (): void => {
-					activeScreen = undefined;
+					releaseScreen();
 					dialogs.dispose();
 					done();
 				};
@@ -192,6 +212,8 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 					requestRender: () => tui.requestRender(),
 					dialogHost: offsetDialogHost(dialogs, { row: 1, col: 1 }),
 					sidebarToggleKey,
+					location: navigation.location,
+					onDispose: releaseScreen,
 				});
 				activeScreen = screen;
 				return new FullscreenOverlay(tui, theme, screen, { label: "Settings", icon: "settings" });
@@ -206,7 +228,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 
 	function closePanelEditor(): void {
 		if (!panelTabOpen) return;
-		activeScreen = undefined;
+		releaseScreen();
 		panelTabOpen = false;
 		panel?.removeTab(SETTINGS_TAB_ID);
 		finishPanelEditor();
@@ -214,7 +236,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 
 	function finishPanelEditor(): void {
 		if (!panelEditor) return;
-		activeScreen = undefined;
+		releaseScreen();
 		panelTabOpen = false;
 		const editor = panelEditor;
 		panelEditor = undefined;
@@ -302,6 +324,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async (_event, context) => {
 		// Every shutdown replaces this runtime; invalidate captures before yielding.
 		disposed = true;
+		releaseScreen();
 		syncContext = undefined;
 		panelContext = undefined;
 		stopWatching?.();

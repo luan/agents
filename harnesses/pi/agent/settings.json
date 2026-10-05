@@ -1,9 +1,9 @@
 {
   "enableInstallTelemetry": false,
   "defaultProjectTrust": "always",
-  "lastChangelogVersion": "1.0.0",
+  "lastChangelogVersion": "1.0.2",
   "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-6-luna",
+  "defaultModel": "gpt-6.1-sol",
   "defaultThinkingLevel": "medium",
   "packages": [
     "packages/pi-libtui",
@@ -38,7 +38,7 @@
     "reserveTokens": 16384,
     "keepRecentTokens": 20000
   },
-  "theme": "tokyo-night",
+  "theme": "harmonious",
   "showCacheMissNotices": true,
   "tuiMode": "fullscreen",
   "fullscreenExitOutput": "resume-hint",
@@ -85,7 +85,7 @@
   "branchSummary": {
     "skipPrompt": false
   },
-  "editorPaddingX": 0,
+  "editorPaddingX": 1,
   "outputPad": 1,
   "warnings": {
     "anthropicExtraUsage": false

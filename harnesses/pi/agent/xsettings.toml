@@ -1,6 +1,6 @@
 [appearance]
 pi.showCacheMissNotices = true
-pi.theme = "tokyo-night"
+pi.theme = "harmonious"
 pi.tuiMode = "fullscreen"
 pi.fullscreenExitOutput = "resume-hint"
 pi.terminal.showTerminalProgress = true

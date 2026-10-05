@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { subscribeTuiAppearance } from "../appearance.ts";
 import { renderEditorPasteMarkerPills } from "../decoration/editor-pills.ts";
@@ -10,6 +10,7 @@ import { measureTerminalColors, terminalColorsRegistry } from "../terminal-color
 import { shutdownPtyHost } from "../terminal/pty-host.ts";
 import { installCursorBridge } from "./cursor-bridge.ts";
 import { installEditorBridge } from "./editor-bridge.ts";
+import { installMarkdownTableBridge } from "./markdown-table-bridge.ts";
 import { installMouseBridge } from "./mouse-bridge.ts";
 import { installNativeToolBridge } from "./native-tool-bridge.ts";
 import { NestedToolResults } from "./nested-tool-results.ts";
@@ -28,8 +29,6 @@ class LibtuiHostWidget implements Component {
 	private readonly removeAppearanceSubscription: () => void;
 	private readonly removeColorSubscription: () => void;
 	private readonly removeFocusSubscription: () => void;
-	private terminalColorsReady = false;
-	private fallbackTheme: Theme | undefined;
 	private disposed = false;
 	private readonly removeNativeToolBridge: () => void;
 
@@ -82,7 +81,6 @@ class LibtuiHostWidget implements Component {
 			previousCursorBridge();
 			previousMouseBridge();
 		}
-		this.applyHarmoniousFallback();
 		return [];
 	}
 
@@ -103,22 +101,14 @@ class LibtuiHostWidget implements Component {
 	private async loadTerminalColors(): Promise<void> {
 		let profile: Awaited<ReturnType<typeof measureTerminalColors>>;
 		try {
-			profile = await measureTerminalColors(this.tui);
+			profile = await measureTerminalColors(this.tui, 100, (late) => {
+				if (!this.disposed) terminalColorsRegistry().publish(late);
+			});
 		} catch {
 			profile = { scheme: "dark", indexedPalette: "unknown" };
 		}
 		if (this.disposed) return;
 		terminalColorsRegistry().publish(profile);
-		this.terminalColorsReady = true;
-		this.fallbackTheme = this.ui.getTheme(profile.scheme);
-		this.applyHarmoniousFallback();
-	}
-
-	private applyHarmoniousFallback(): void {
-		if (!this.terminalColorsReady || this.ui.theme.name !== "harmonious") return;
-		const terminal = terminalColorsRegistry().current();
-		if (terminal?.indexedPalette === "generated" || terminal?.ansiBase16) return;
-		if (this.fallbackTheme) this.ui.setTheme(this.fallbackTheme);
 	}
 }
 
@@ -184,6 +174,7 @@ function createHostRegistration(): HostRegistration {
 				readonly removeEditorBridge: () => void;
 				readonly removeEditorDecorator: () => void;
 				readonly removeUserMessageBridge: () => void;
+				readonly removeMarkdownTableBridge: () => void;
 		  }
 		| undefined;
 
@@ -194,6 +185,7 @@ function createHostRegistration(): HostRegistration {
 		session.removeEditorDecorator();
 		session.removeEditorBridge();
 		session.removeUserMessageBridge();
+		session.removeMarkdownTableBridge();
 		session.ui.setWidget(WIDGET_KEY, undefined);
 	}
 
@@ -214,6 +206,7 @@ function createHostRegistration(): HostRegistration {
 				removeEditorBridge,
 				removeEditorDecorator,
 				removeUserMessageBridge: installUserMessageBridge(),
+				removeMarkdownTableBridge: installMarkdownTableBridge(() => ctx.ui.theme),
 			};
 			// A zero-height widget obtains Pi's stable TUI reference without changing the existing spacer row.
 			ctx.ui.setWidget(

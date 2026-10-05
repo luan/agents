@@ -8,7 +8,7 @@ import { createCopyModeHost, type CopyModeHost } from "./runtime/copy-mode.ts";
 
 const WIDGET_KEY = "pi-copy-mode.host";
 // Bundled or repeated installs may load multiple copies. Only one loaded copy may own the
-// action, settings, and widget; later copies stay inert until the owner releases on reload/quit.
+// action, settings, and widget; later copies stay inert until the owner's runtime shuts down.
 // type-boundary: Global capability slots are checked for ownership before use.
 type OwnershipBoundary = unknown;
 const OWNER_KEY = Symbol.for("pi-copy-mode/owner/v1");
@@ -47,8 +47,12 @@ export default function copyModeExtension(pi: ExtensionAPI): void {
 	let removeSelectionListener: (() => void) | undefined;
 	const unregisterSettings = registerCopyModeSettings();
 	const unregisterAction = registerCopyModeAction((ctx) => {
-		if (ctx.mode !== "tui" || !host) {
-			ctx.ui.notify("Copy mode requires an active interactive TUI session.", "warning");
+		if (ctx.mode !== "tui") {
+			ctx.ui.notify("Copy mode requires the interactive TUI.", "warning");
+			return;
+		}
+		if (!host) {
+			ctx.ui.notify("Copy mode's TUI host is not initialized. Run /reload to reattach it.", "warning");
 			return;
 		}
 		host.enter();
@@ -67,16 +71,14 @@ export default function copyModeExtension(pi: ExtensionAPI): void {
 		);
 	});
 
-	pi.on("session_shutdown", (event, ctx) => {
+	pi.on("session_shutdown", (_event, ctx) => {
 		removeSelectionListener?.();
 		removeSelectionListener = undefined;
 		host?.dispose();
 		host = undefined;
 		if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET_KEY, undefined);
-		if (event.reason === "reload" || event.reason === "quit") {
-			unregisterAction();
-			unregisterSettings();
-			release();
-		}
+		unregisterAction();
+		unregisterSettings();
+		release();
 	});
 }

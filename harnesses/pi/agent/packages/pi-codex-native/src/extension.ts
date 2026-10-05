@@ -13,6 +13,7 @@ import { registerOpenAICodexProvider } from "./provider/provider.ts";
 import type { CodexProviderRuntime } from "./provider/runtime.ts";
 import { registerTextVerbosity } from "./provider/text-verbosity.ts";
 import { createWebRunTool } from "./tools/web-run/definition.ts";
+import { registerWebCitations } from "./ui/web-citations.ts";
 
 function reportDiagnosticsFailure(ctx: ExtensionContext, action: string, error: unknown): void {
 	if (!ctx.hasUI) return;
@@ -72,6 +73,7 @@ export function registerCodexNativeLifecycle(
 }
 
 export default function codexNativeExtension(pi: ExtensionAPI): void {
+	registerWebCitations(pi);
 	const unregisterPromptPayloadAdapter = registerCodexPromptPayloadAdapter();
 	const unregisterModelToolPolicy = registerModelToolPolicy(pi);
 	registerAutoReasoning(pi);

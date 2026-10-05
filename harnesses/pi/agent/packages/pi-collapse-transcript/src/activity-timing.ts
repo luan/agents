@@ -44,7 +44,8 @@ export class ActivityTimings {
 						? this.tools.get(entry.toolCallId)
 						: undefined;
 			if (!interval) continue;
-			const finished = running || (entry.kind !== "content" && entry.running) ? now : interval.end;
+			const finished =
+				running || ((entry.kind === "thinking" || entry.kind === "tool") && entry.running) ? now : interval.end;
 			if (finished === undefined) continue;
 			start = Math.min(start, interval.start);
 			end = Math.max(end, finished);

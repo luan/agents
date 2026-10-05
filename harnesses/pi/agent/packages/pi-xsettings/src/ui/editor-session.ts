@@ -8,7 +8,7 @@ import type { SettingOption, SettingRegistration, SettingValue, XSettingsRegistr
 import { applyLiveTheme, applySavedSettings } from "../runtime/apply.ts";
 import { resolveRegistrationValues } from "../runtime/settings.ts";
 import { storedEnumValue, toUiField } from "./fields.ts";
-import { type SettingsScreenField, XSettingsScreen } from "./xsettings-screen.ts";
+import { type SettingsScreenField, type SettingsScreenLocation, XSettingsScreen } from "./xsettings-screen.ts";
 
 /** One open settings editor, including its serialized writes and close-time apply. */
 export class XSettingsEditorSession {
@@ -70,6 +70,8 @@ export class XSettingsEditorSession {
 			readonly dialogHost?: DialogHost;
 			readonly sidebarToggleKey?: KeyId;
 			readonly requestRender: () => void;
+			readonly location?: SettingsScreenLocation;
+			readonly onDispose?: (screen: XSettingsScreen) => void;
 		},
 	): XSettingsScreen {
 		return new XSettingsScreen(
@@ -110,6 +112,8 @@ export class XSettingsEditorSession {
 			options.requestRender,
 			options.sidebarToggleKey,
 			(id, value) => this.preview(id, value),
+			options.location,
+			options.onDispose,
 		);
 	}
 

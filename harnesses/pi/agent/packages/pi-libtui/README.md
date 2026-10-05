@@ -10,9 +10,15 @@ side-effect-free library: it does not start Pi, probe the terminal, register a
 tool, or install UI. `src/extension.ts` is a Pi extension (listed in the
 package's `pi.extensions`) that installs the generic mouse, cursor, and
 editor-token and user-message layout bridges, keeps the shared native PTY host alive, measures terminal
-colors, applies the `harmonious` theme fallback, drives Pi's streaming status
+colors, drives Pi's streaming status
 row, and registers the `/libtui:colors` 256-color palette diagnostic. It
 registers no model-facing tools, keybindings, or feature-specific UI.
+
+Markdown tables use an open Codex-style layout: colored headers, muted horizontal
+rules, and padded columns without an outer box or vertical grid. Pi still owns
+cell wrapping, inline formatting, links, and narrow-width fallback. A shared,
+reversible Pi 1.0 prototype lease supplies the layout until Pi exposes a public
+table-rendering API.
 
 The host presents Pi 1.0's native `codemode` calls through each nested tool's
 registered renderer: shell transcripts remain shell transcripts, and patches
@@ -71,10 +77,11 @@ colors and the ANSI palette; libtui additionally measures the two indexed
 palette anchors used by `harmonious`.
 
 The manifest exposes `themes/harmonious.json`, which relies on the terminal's
-indexed palette. If `harmonious` is active and the measured terminal reports
-neither a generated 256-color palette nor an ANSI base-16 palette, the host
-switches to Pi's built-in theme for the detected light or dark scheme (dark if
-the measurement fails).
+indexed palette. It stays active when the terminal does not answer color queries,
+including behind multiplexers: missing reports do not mean indexed colors are
+unavailable. Late reports refresh the shared color measurements. When the terminal
+reports a custom ANSI base-16 palette, libtui generates matching extension colors;
+otherwise it uses the terminal's indexed colors directly.
 
 Painted surfaces set a contrasting default foreground as well as a background,
 including after child text resets its colors. Explicit text colors remain
@@ -133,7 +140,8 @@ pi-custom-editor status row and file tokens.
 `renderTranscriptPill` paints feature-owned labels before native Markdown
 wrapping. Image, file-reference, and skill pills share this path without a
 screen decorator; native selection and overlays compose over the painted pills.
-The optional muted variant targets queued-message rows.
+The optional muted variant targets queued-message rows; the assistant surface
+targets inline response pills and keeps their labels literal through Markdown parsing.
 `installPendingMessageTransformer` leases Pi 0.87.1's pre-truncation queue
 rendering boundary until Pi provides a public transformer for that surface.
 
@@ -180,8 +188,13 @@ keyed by `Symbol.for`, so feature packages and the host share one instance.
 Tool presentation has three layers: `ToolTranscript` (copy-friendly action plus
 payload), `ToolActivity` (streaming, diff, terminal, and viewport state for a
 live surface), and `ToolOutput` for text streams. `mountTranscriptProjection`
-exposes native transcript entries to a feature-owned component through a
-guarded Pi 0.84–0.85 adapter; unsupported hosts keep their native transcript.
+exposes native transcript entries, including compaction summaries, to a
+feature-owned component through a guarded Pi 1.0 adapter; unsupported hosts keep
+their native transcript. `installTranscriptHistory(tui)` separately leases
+Pi's display-only history methods so compaction appends its marker without
+clearing chat, and reload or resume renders the full saved branch. Model context
+is unaffected. The lease is opt-in, shared across installed copies, and restores
+native methods when its last owner disposes it.
 Expanded output supports Page Up/Down after opening its header, mouse-wheel
 scrolling, and scrollbar dragging. Nested viewports reserve separate scrollbar
 columns and expose their clipped child geometry to the mouse host, preserving

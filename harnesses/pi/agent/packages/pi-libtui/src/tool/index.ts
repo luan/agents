@@ -21,6 +21,7 @@ export { ToolOutput } from "./output.ts";
 export type { ToolTranscriptOptions } from "./transcript.ts";
 export { ToolTranscript } from "./transcript.ts";
 export { mountTranscriptProjection } from "../host/transcript-bridge.ts";
+export { installTranscriptHistory, retainTranscriptHistory } from "../host/transcript-history.ts";
 export type { TranscriptEntry, TranscriptProjection } from "../host/transcript-bridge.ts";
 export type { OmissionRowProvider, ToolViewMode, ToolViewRegionOptions } from "./view-region.ts";
 export { ToolViewRegion } from "./view-region.ts";

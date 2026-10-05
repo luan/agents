@@ -235,9 +235,10 @@ function createTuiTheme(
 	measurements: MeasuredTerminalColors | undefined,
 ): { facade: TuiTheme; resolver: ColorResolver } {
 	let resolver: ColorResolver;
-	let aliases: ThemeAliases = { editor: hostBackgroundColor(theme, "customMessageBg") };
-	if (theme.name === "harmonious" && measurements?.indexedPalette === "generated") {
-		const resolvedPalette = measurements.ansiBase16
+	let aliases: ThemeAliases = {};
+	// Missing OSC replies do not mean indexed colors are unavailable (for example, behind a multiplexer).
+	if (theme.name === "harmonious" && (measurements?.indexedPalette === "generated" || !measurements?.ansiBase16)) {
+		const resolvedPalette = measurements?.ansiBase16
 			? generateColor256(
 					measurements.ansiBase16,
 					measurements.defaultBackground ?? measurements.ansiBase16[0]!,
@@ -277,7 +278,7 @@ function createTuiTheme(
 			output: theme.getColorMode?.() === "256color" ? "quantized-indexed" : "truecolor",
 		});
 		aliases = {
-			...aliases,
+			editor: hostBackgroundColor(theme, "customMessageBg"),
 			secondary: hostForegroundColor(theme, "muted"),
 			muted: hostForegroundColor(theme, "dim"),
 			border: hostForegroundColor(theme, "border"),

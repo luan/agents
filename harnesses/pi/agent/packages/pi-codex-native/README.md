@@ -254,6 +254,11 @@ is installed; otherwise the defaults apply.
 `time` operations plus `response_length` and `settings.search_context_size`.
 It rejects a non-Codex active model before starting the native process.
 
+Assistant web citations render as page-title pills. In fullscreen Pi, hover to
+preview the full title, URL, and fetched excerpt; pills remain terminal hyperlinks. Source
+details survive reload and branch navigation; unresolved references retain
+readable IDs. This only changes presentation, not stored messages or model context.
+
 Requires a Rust toolchain (https://rustup.rs). The `web_run` binary builds
 itself on first use under Pi's agent directory (`native/web-run/<version>/`).
 Set `PI_CODEX_WEB_RUN_BIN` to use a prebuilt binary.
@@ -293,6 +298,7 @@ from `PI_CODEX_BASE_URL` or the default Codex backend.
 | Cache diagnostics status and logs | `src/diagnostics/` |
 | Developer-message serialization | `src/prompt-payload-adapter.ts` |
 | `web__run` schema, process, result, rendering | `src/tools/web-run/` |
+| Assistant web citation pills and hover previews | `src/ui/web-citations.ts`, `src/ui/web-citation-preview.ts` |
 
 ## Develop
 

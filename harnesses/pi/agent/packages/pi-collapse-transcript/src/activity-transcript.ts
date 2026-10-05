@@ -9,8 +9,9 @@ import {
 } from "@luan.sh/pi-libtui";
 import { ToolActivity, type TranscriptEntry } from "@luan.sh/pi-libtui/tool";
 import { ActivityTimings, formatActivityDuration } from "./activity-timing.ts";
+import { CompactionSection } from "./compaction-section.ts";
 
-type ActivityEntry = Exclude<TranscriptEntry, { kind: "content" }>;
+type ActivityEntry = Extract<TranscriptEntry, { kind: "thinking" | "tool" }>;
 
 /** Use a provider's latest heading or paragraph; do not invent a reasoning summary. */
 export function activitySummary(entry: ActivityEntry): string {
@@ -28,13 +29,12 @@ export function activitySummary(entry: ActivityEntry): string {
 
 class ActivitySection extends ComponentStack {
 	private readonly body = new ComponentStack();
-	private readonly failurePreview = new ComponentStack();
+	private readonly preview = new Spacer(0);
 	private readonly activity: ToolActivity;
 	private entries: readonly ActivityEntry[] = [];
 	private clock: MotionMount | undefined;
 	private summary = "";
 	private running = false;
-	private failures = 0;
 
 	constructor(
 		private readonly theme: Theme,
@@ -62,15 +62,11 @@ class ActivitySection extends ComponentStack {
 			return;
 		this.entries = entries;
 		this.body.setChildren(entries.map((entry) => entry.component));
-		// Failures stay visible without expanding successful output or thinking.
-		this.failurePreview.setChildren(entries.filter((entry) => entry.failed).map((entry) => entry.component));
 		// Keep the model's intent visible while tools run and after they finish.
 		const latest =
 			entries.filter((entry) => entry.kind === "thinking" && entry.summary.trim()).at(-1) ?? entries.at(-1)!;
-		const failures = entries.filter((entry) => entry.failed).length;
 		this.summary = activitySummary(latest);
 		this.running = running;
-		this.failures = failures;
 		if (running && !this.clock)
 			this.clock = sharedMotionScheduler.mount({ requestRender: this.requestRender }, { cadenceMs: 1_000 });
 		else if (!running) {
@@ -80,11 +76,12 @@ class ActivitySection extends ComponentStack {
 		this.activity.update({
 			action: {
 				verb: this.summary,
-				status: failures ? "failed" : running ? "running" : "succeeded",
+				// A failed tool is not a failed request; native request errors remain separate entries.
+				status: running ? "running" : "succeeded",
 				marker: false,
 			},
 			running,
-			payload: { kind: "component", preview: this.failurePreview, full: this.body },
+			payload: { kind: "component", preview: this.preview, full: this.body },
 		});
 	}
 
@@ -109,8 +106,7 @@ class ActivitySection extends ComponentStack {
 		const duration = elapsed === undefined ? "" : ` for ${formatActivityDuration(elapsed)}`;
 		const label = `  ${this.running ? "Working" : "Worked"}${duration} · ${this.theme.italic(this.summary)}`;
 		const steps = `${this.entries.length} ${this.entries.length === 1 ? "step" : "steps"}`;
-		const failed = this.failures ? ` · ${this.failures} failed` : "";
-		return [truncateToWidth(`${label} · ${steps}${failed}`, width, "…")];
+		return [truncateToWidth(`${label} · ${steps}`, width, "…")];
 	}
 
 	dispose(): void {
@@ -122,6 +118,7 @@ class ActivitySection extends ComponentStack {
 /** Fold consecutive tools/thinking, leaving assistant text and every other message in place. */
 export class ActivityTranscript extends ComponentStack {
 	private readonly sections = new Map<object, ActivitySection>();
+	private readonly compactions = new Map<object, CompactionSection>();
 	private completedBeforeTurn: Set<object> | undefined;
 
 	constructor(
@@ -163,10 +160,18 @@ export class ActivityTranscript extends ComponentStack {
 			pending = [];
 		};
 		for (const entry of this.entries()) {
-			if (entry.kind !== "content") pending.push(entry);
+			if (entry.kind === "thinking" || entry.kind === "tool") pending.push(entry);
 			else {
 				flush();
-				children.push(entry.component);
+				if (entry.kind === "compaction") {
+					let section = this.compactions.get(entry.key);
+					if (!section) {
+						section = new CompactionSection(entry, this.theme, this.requestRender);
+						this.compactions.set(entry.key, section);
+					}
+					retained.add(entry.key);
+					children.push(section);
+				} else children.push(entry.component);
 			}
 		}
 		const beforeTurn = this.completedBeforeTurn;
@@ -176,6 +181,11 @@ export class ActivityTranscript extends ComponentStack {
 			section.dispose();
 			this.sections.delete(key);
 		}
+		for (const [key, section] of this.compactions) {
+			if (retained.has(key)) continue;
+			section.dispose();
+			this.compactions.delete(key);
+		}
 		this.setChildren(children);
 		return super.render(width);
 	}
@@ -183,5 +193,7 @@ export class ActivityTranscript extends ComponentStack {
 	dispose(): void {
 		for (const section of this.sections.values()) section.dispose();
 		this.sections.clear();
+		for (const section of this.compactions.values()) section.dispose();
+		this.compactions.clear();
 	}
 }

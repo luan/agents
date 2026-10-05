@@ -156,6 +156,9 @@ describe("settings screen fields", () => {
 			(_id, value) => changes.push(value),
 			() => {},
 			() => {},
+			24,
+			[],
+			steering.id,
 		);
 
 		screen.handleInput("l");

@@ -1,9 +1,14 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mock } from "node:test";
 import type { TUI, TuiInputListener } from "@earendil-works/pi-tui";
 import { rgb } from "../src/color/palette.ts";
 import { measureTerminalColors, terminalColorsRegistry } from "../src/terminal-colors.ts";
 
-afterEach(() => terminalColorsRegistry().publish(undefined));
+beforeEach(() => mock.timers.enable({ apis: ["setTimeout"] }));
+afterEach(() => {
+	mock.timers.reset();
+	terminalColorsRegistry().publish(undefined);
+});
 
 describe("terminal color detection", () => {
 	test("rejects stale or malformed cross-realm profiles", () => {
@@ -57,6 +62,7 @@ describe("terminal color detection", () => {
 		} as never as TUI;
 		const profile = await measureTerminalColors(tui, 10);
 		expect(profile.scheme).toBe("dark");
+		expect(profile.indexedPalette).toBe("generated");
 		expect(writes.some((value) => value.includes("]4;231;?"))).toBe(true);
 	});
 
@@ -106,7 +112,65 @@ describe("terminal color detection", () => {
 			queryTerminalColors: async () => ({}),
 		} as never as TUI;
 
-		await measureTerminalColors(tui, 10);
+		const measured = measureTerminalColors(tui, 10);
+		await Promise.resolve();
+		mock.timers.tick(10);
+		await measured;
 		expect(listener?.("\x1b]10;rgb:11/22/33\x1b\\typed")).toEqual({ data: "typed" });
+	});
+
+	test("updates measurements when Pi's palette reply arrives after timeout", async () => {
+		let onLateReply: Parameters<TUI["queryTerminalColors"]>[0]["onLateReply"];
+		let listener: TuiInputListener | undefined;
+		const tui = {
+			terminal: {
+				write() {
+					listener?.("\x1b[?1;2c");
+				},
+			},
+			addInputListener(next: TuiInputListener) {
+				listener = next;
+				return () => {
+					listener = undefined;
+				};
+			},
+			queryTerminalColors: async (options: Parameters<TUI["queryTerminalColors"]>[0]) => {
+				onLateReply = options.onLateReply;
+				return {};
+			},
+		} as never as TUI;
+		const updates: Awaited<ReturnType<typeof measureTerminalColors>>[] = [];
+		const initial = await measureTerminalColors(tui, 10, (profile) => updates.push(profile));
+		expect(initial.ansiBase16).toBeUndefined();
+		const palette = Array.from({ length: 16 }, (_, index) => rgb(index * 16, index * 8, index * 4));
+		onLateReply?.({ background: palette[0], foreground: palette[15], palette });
+		expect(updates).toEqual([
+			{ ...initial, defaultBackground: palette[0], defaultForeground: palette[15], ansiBase16: palette },
+		]);
+	});
+
+	test("updates late indexed anchors without swallowing adjacent input", async () => {
+		let listener: TuiInputListener | undefined;
+		const tui = {
+			terminal: { write() {} },
+			addInputListener(next: TuiInputListener) {
+				listener = next;
+				return () => {
+					listener = undefined;
+				};
+			},
+			queryTerminalColors: async () => ({ background: rgb(17, 17, 17), foreground: rgb(238, 238, 238) }),
+		} as never as TUI;
+		const updates: Awaited<ReturnType<typeof measureTerminalColors>>[] = [];
+		const measured = measureTerminalColors(tui, 10, (profile) => updates.push(profile));
+		await Promise.resolve();
+		mock.timers.tick(10);
+		expect((await measured).indexedPalette).toBe("unknown");
+		expect(listener?.("\x1b]4;16;rgb:1111/1111/1111\x1b\\\x1b]4;231;rgb:eeee/eeee/eeee\x1b\\typed")).toEqual({
+			data: "typed",
+		});
+		expect(updates.at(-1)?.indexedPalette).toBe("generated");
+		mock.timers.tick(10);
+		expect(listener).toBeUndefined();
 	});
 });

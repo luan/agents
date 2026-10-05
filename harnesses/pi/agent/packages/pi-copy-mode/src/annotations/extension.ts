@@ -273,7 +273,7 @@ export default function annotationExtension(pi: ExtensionAPI): void {
 		store.clear();
 	});
 
-	pi.on("session_shutdown", (event, sessionCtx) => {
+	pi.on("session_shutdown", (_event, sessionCtx) => {
 		removeRequest?.();
 		removeRequest = undefined;
 		removeReferenceCleanupDecorator?.();
@@ -301,9 +301,7 @@ export default function annotationExtension(pi: ExtensionAPI): void {
 		sessionCtx.ui.setStatus(STATUS_KEY, undefined);
 		if (sessionCtx.mode === "tui") sessionCtx.ui.setWidget(WIDGET_KEY, undefined);
 		installedEditorFactory = undefined;
-		if (event.reason === "reload" || event.reason === "quit") {
-			unregisterDeveloperPrompt();
-		}
+		unregisterDeveloperPrompt();
 	});
 }
 

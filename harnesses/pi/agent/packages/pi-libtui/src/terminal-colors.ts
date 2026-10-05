@@ -47,9 +47,25 @@ type TerminalColorReply =
 	| { name: "palette"; index: number; color: RgbColor };
 
 /** Measure terminal defaults and palette anchors while preserving unrelated input. */
-export async function measureTerminalColors(tui: TUI, timeoutMs = 100): Promise<MeasuredTerminalColors> {
-	const colors = await tui.queryTerminalColors({ timeoutMs });
+export async function measureTerminalColors(
+	tui: TUI,
+	timeoutMs = 100,
+	onLateReply?: (measurements: MeasuredTerminalColors) => void,
+): Promise<MeasuredTerminalColors> {
+	let colors: Awaited<ReturnType<TUI["queryTerminalColors"]>> = {};
 	const replies = new Map<string, RgbColor>();
+	let finished = false;
+	const publishLateReply = () => {
+		if (finished) onLateReply?.(terminalProfile(colors, replies));
+	};
+	const initial = await tui.queryTerminalColors({
+		timeoutMs,
+		onLateReply(late) {
+			colors = late;
+			publishLateReply();
+		},
+	});
+	colors = { ...initial, ...colors };
 	let pending = "";
 	let sawDa1 = false;
 	let finish: (() => void) | undefined;
@@ -63,6 +79,7 @@ export async function measureTerminalColors(tui: TUI, timeoutMs = 100): Promise<
 			const key = response.name === "palette" ? `palette:${response.index}` : response.name;
 			replies.set(key, response.color);
 		}
+		if (batch.responses.length > 0) publishLateReply();
 		sawDa1 ||= batch.sawDa1;
 		if ((replies.has("color16") && replies.has("color231")) || sawDa1) finish?.();
 		if (!batch.handled) return undefined;
@@ -84,6 +101,14 @@ export async function measureTerminalColors(tui: TUI, timeoutMs = 100): Promise<
 		const quarantine = setTimeout(removeListener, timeoutMs);
 		quarantine.unref?.();
 	}
+	finished = true;
+	return terminalProfile(colors, replies);
+}
+
+function terminalProfile(
+	colors: Awaited<ReturnType<TUI["queryTerminalColors"]>>,
+	replies: ReadonlyMap<string, RgbColor>,
+): MeasuredTerminalColors {
 	const backgroundValue = colors.background;
 	const defaultBackground = backgroundValue ? rgb(backgroundValue.r, backgroundValue.g, backgroundValue.b) : undefined;
 	const defaultForeground = replies.get("foreground") ?? colors.foreground;

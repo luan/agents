@@ -1,0 +1,4 @@
+interface:
+  display_name: "Spriteforge"
+  short_description: "Render Blender assets as consistent pixel art"
+  default_prompt: "Use $spriteforge to turn this Blender asset into pixel sprites."

@@ -26,8 +26,11 @@ without it, the editor opens as a fullscreen overlay.
 
 ## Use
 
-In the TUI, run `/xsettings`. Outside the TUI (print, RPC, and other
-non-interactive modes) the command only prints a warning.
+In the TUI, run `/xsettings`. Reopening restores the last page, setting, search,
+and pane focus, including after reloads in the same Pi process. The first open
+starts on the UI page.
+Outside the TUI (print, RPC, and other non-interactive modes), the command
+only prints a warning.
 
 Configured `defaultTools` form the session's tool baseline. Startup, resume,
 reload, and branch navigation automatically enable that selection while keeping

@@ -1,9 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { mountTranscriptProjection } from "@luan.sh/pi-libtui/tool";
+import { installTranscriptHistory, mountTranscriptProjection, retainTranscriptHistory } from "@luan.sh/pi-libtui/tool";
 import { ActivityTimings } from "./activity-timing.ts";
 import { ActivityTranscript } from "./activity-transcript.ts";
 
 export default function transcriptExtension(pi: ExtensionAPI): void {
+	const releasePreparation = retainTranscriptHistory();
 	let unmount: (() => void) | undefined;
 	let transcript: ActivityTranscript | undefined;
 	pi.on("agent_start", () => transcript?.beginTurn());
@@ -26,9 +27,14 @@ export default function transcriptExtension(pi: ExtensionAPI): void {
 		unmount?.();
 		unmount = undefined;
 		transcript = undefined;
-		if (!ctx.hasUI || ctx.mode !== "tui") return;
+		if (!ctx.hasUI || ctx.mode !== "tui") {
+			releasePreparation();
+			return;
+		}
 		ctx.ui.setWidget("pi-collapse-transcript.host", (tui, theme) => {
 			unmount?.();
+			const releaseHistory = installTranscriptHistory(tui);
+			releasePreparation();
 			const timings = new ActivityTimings();
 			let previousLeaf: string | null | undefined;
 			const release = mountTranscriptProjection(tui, (entries) => {
@@ -47,18 +53,23 @@ export default function transcriptExtension(pi: ExtensionAPI): void {
 				);
 				return transcript;
 			});
-			unmount = release;
+			const dispose = () => {
+				release?.();
+				releaseHistory();
+			};
+			unmount = dispose;
 			return {
 				render: () => [],
 				invalidate() {},
 				dispose: () => {
-					release?.();
-					if (unmount === release) unmount = undefined;
+					dispose();
+					if (unmount === dispose) unmount = undefined;
 				},
 			};
 		});
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		releasePreparation();
 		unmount?.();
 		unmount = undefined;
 		transcript = undefined;
