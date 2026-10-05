@@ -13,7 +13,7 @@
     },
     "harnesses/pi/agent/packages/pi-codex-native": {
       "name": "@luan.sh/pi-codex-native",
-      "version": "0.3.12",
+      "version": "0.3.13",
       "dependencies": {
         "@luan.sh/pi-developer-messages": "workspace:*",
         "@luan.sh/pi-libactions": "workspace:*",
@@ -41,7 +41,7 @@
     },
     "harnesses/pi/agent/packages/pi-collapse-transcript": {
       "name": "@luan.sh/pi-collapse-transcript",
-      "version": "0.3.5",
+      "version": "0.3.6",
       "dependencies": {
         "@luan.sh/pi-libtui": "workspace:*",
       },
@@ -111,7 +111,7 @@
     },
     "harnesses/pi/agent/packages/pi-copy-mode": {
       "name": "@luan.sh/pi-copy-mode",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "dependencies": {
         "@luan.sh/pi-libactions": "workspace:*",
         "@luan.sh/pi-libtui": "workspace:*",
@@ -130,7 +130,7 @@
     },
     "harnesses/pi/agent/packages/pi-custom-editor": {
       "name": "@luan.sh/pi-custom-editor",
-      "version": "0.3.5",
+      "version": "0.3.6",
       "dependencies": {
         "@luan.sh/pi-libtui": "workspace:*",
         "@luan.sh/pi-xsettings": "workspace:*",
@@ -148,7 +148,7 @@
     },
     "harnesses/pi/agent/packages/pi-developer-messages": {
       "name": "@luan.sh/pi-developer-messages",
-      "version": "0.3.8",
+      "version": "0.3.9",
       "dependencies": {
         "@luan.sh/pi-libtui": "workspace:*",
         "@luan.sh/pi-xsettings": "workspace:*",
@@ -166,7 +166,7 @@
     },
     "harnesses/pi/agent/packages/pi-exec-command": {
       "name": "@luan.sh/pi-exec-command",
-      "version": "0.3.9",
+      "version": "0.3.10",
       "dependencies": {
         "@luan.sh/pi-libactions": "workspace:*",
         "@luan.sh/pi-libtui": "workspace:*",
@@ -186,7 +186,7 @@
     },
     "harnesses/pi/agent/packages/pi-fileops": {
       "name": "@luan.sh/pi-fileops",
-      "version": "0.3.8",
+      "version": "0.3.9",
       "dependencies": {
         "@luan.sh/pi-libtui": "workspace:*",
       },
@@ -222,7 +222,7 @@
     },
     "harnesses/pi/agent/packages/pi-libactions": {
       "name": "@luan.sh/pi-libactions",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "devDependencies": {
         "@earendil-works/pi-coding-agent": "1.0.0",
         "@earendil-works/pi-tui": "1.0.0",
@@ -236,7 +236,7 @@
     },
     "harnesses/pi/agent/packages/pi-libtui": {
       "name": "@luan.sh/pi-libtui",
-      "version": "0.3.14",
+      "version": "0.3.15",
       "dependencies": {
         "@pierre/diffs": "1.3.5",
         "@xterm/headless": "6.0.0",
@@ -255,7 +255,7 @@
     },
     "harnesses/pi/agent/packages/pi-panels": {
       "name": "@luan.sh/pi-panels",
-      "version": "0.3.4",
+      "version": "0.3.5",
       "dependencies": {
         "@luan.sh/pi-libactions": "workspace:*",
         "@luan.sh/pi-libtui": "workspace:*",
@@ -273,7 +273,7 @@
     },
     "harnesses/pi/agent/packages/pi-prompt-storage": {
       "name": "@luan.sh/pi-prompt-storage",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "dependencies": {
         "@luan.sh/pi-libtui": "workspace:*",
       },
@@ -290,7 +290,7 @@
     },
     "harnesses/pi/agent/packages/pi-side": {
       "name": "@luan.sh/pi-side",
-      "version": "0.3.4",
+      "version": "0.3.5",
       "dependencies": {
         "@luan.sh/pi-libactions": "workspace:*",
         "@luan.sh/pi-libtui": "workspace:*",
@@ -310,7 +310,7 @@
     },
     "harnesses/pi/agent/packages/pi-skills": {
       "name": "@luan.sh/pi-skills",
-      "version": "0.3.8",
+      "version": "0.3.9",
       "dependencies": {
         "@luan.sh/pi-libtui": "workspace:*",
         "@luan.sh/pi-xsettings": "workspace:*",
@@ -328,7 +328,7 @@
     },
     "harnesses/pi/agent/packages/pi-subagents": {
       "name": "@luan.sh/pi-subagents",
-      "version": "0.3.10",
+      "version": "0.3.11",
       "dependencies": {
         "@luan.sh/pi-libactions": "workspace:*",
         "@luan.sh/pi-libtui": "workspace:*",
@@ -353,7 +353,7 @@
     },
     "harnesses/pi/agent/packages/pi-thinking-binding": {
       "name": "@luan.sh/pi-thinking-binding",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "devDependencies": {
         "@earendil-works/pi-agent-core": "1.0.0",
         "@earendil-works/pi-coding-agent": "1.0.0",
@@ -384,7 +384,7 @@
     },
     "harnesses/pi/agent/packages/pi-tuicr": {
       "name": "@luan.sh/pi-tuicr",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "dependencies": {
         "@luan.sh/pi-libactions": "workspace:*",
         "@luan.sh/pi-libtui": "workspace:*",
@@ -402,7 +402,7 @@
     },
     "harnesses/pi/agent/packages/pi-view-image": {
       "name": "@luan.sh/pi-view-image",
-      "version": "0.3.9",
+      "version": "0.3.10",
       "dependencies": {
         "@luan.sh/pi-libtui": "workspace:*",
         "@luan.sh/pi-xsettings": "workspace:*",
@@ -453,7 +453,7 @@
     },
     "harnesses/pi/agent/packages/pi-xsettings": {
       "name": "@luan.sh/pi-xsettings",
-      "version": "0.3.6",
+      "version": "0.3.7",
       "dependencies": {
         "@luan.sh/pi-libactions": "workspace:*",
         "@luan.sh/pi-libtui": "workspace:*",
