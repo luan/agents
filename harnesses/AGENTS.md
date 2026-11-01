@@ -46,6 +46,13 @@ When a step doesn't need my input, keep going. Put status notes in the same mess
 
 ## Rust
 
+### Toolchain ownership and compatibility
+
+1. On a managed workstation, use the installed toolchain selected by its machine configuration. A repository's `rust-toolchain.toml` declares the project and CI default; it is not permission to install or change workstation toolchains.
+2. Do not install, update, remove, or switch Rust toolchains unless the user explicitly requests it. This includes `rustup`, Mise Rust operations, and separate Rust installations in temporary or alternate `RUSTUP_HOME` directories. Run missing-toolchain validation in CI instead of downloading another local compiler.
+3. A locally newer or nightly compiler does not change the project's compatibility contract. For a stable project, keep code and dependencies compatible with stable on every supported target, including Wasm and cross-compilation targets.
+4. Do not add nightly feature gates or `RUSTC_BOOTSTRAP` to bypass a stable build failure. Fix the dependency or code using supported APIs, then validate the affected target with the project's declared toolchain.
+
 ### Modules
 
 1. `mod.rs` and `lib.rs` should only have module declarations and re-exports.
