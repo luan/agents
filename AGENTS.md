@@ -30,6 +30,7 @@
 7. Seed the real mutable `~/.codex/config.toml` from `harnesses/codex/config.toml.seed` only when the target does not exist.  Never overwrite an existing target.
 8. Preserve occupied managed paths in a fresh backup before repairing their links. Refuse unsafe parent paths, never overwrite backups, and restore the original when linking fails and the target remains absent.
 9. Make `just unlink` remove only exact managed symlinks owned by this repository.
+10. Edit this repository in its live checkout so linked harnesses and skills can use changes before a commit. Do not create isolated worktrees for this repository. Preserve unrelated local edits.
 
 ## Required validation
 

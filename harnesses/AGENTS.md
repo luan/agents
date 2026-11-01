@@ -8,6 +8,14 @@ I focus on building complex things as simple as possible. I love to find ways to
 
 When a step doesn't need my input, keep going. Put status notes in the same message as your next action.
 
+## Instruction ownership
+
+- Keep shared project requirements in the project's repository so every developer and agent can use them.
+- Keep personal setup and machine-specific guidance in private local instructions. Put harness-specific guidance under that harness; share only rules that apply across harnesses.
+- Use temporary directories and caches for disposable files, never as the source of durable instructions. Keep issue scope and ownership in issues, and completed behavior and evidence in pull requests; do not create separate coordination journals.
+- In coordinator tasks, inspect final images when responsible for visual acceptance. Keep intermediate image payloads with feature owners; request final originals, concise findings, the reviewed source revision and evidence links.
+- Before placing a checkout, large build target, fixture tree or QA scratch, check the destination filesystem. Use disk-backed storage when the default temporary directory is RAM-backed, and measure free space where the data will live. Clean only the owned scratch root.
+
 ## Coding
 
 1. Keep things simple. Apply **YAGNI** unless told otherwise.
@@ -20,7 +28,7 @@ When a step doesn't need my input, keep going. Put status notes in the same mess
 8. Never simplify away explicit requirements, trust-boundary validation, data-loss protection, security, or accessibility.
 9. **Typesafety** is useful. Take advantage of it. When types can make something safe, prefer them over runtime checks, assertions, and tests.
 10. Propose bold ideas when they can meaningfully improve the work.
-11. Tests are good. Write focused tests for **real behavior** and meaningful failure boundaries. Avoid endless smoke tests, regression tests for deleted behavior, and performative coverage.
+11. Tests are good. Write focused tests for **real behavior** and meaningful failure boundaries. Include existing tests affected by a shared-path or contract change, not only newly added cases. Avoid endless smoke tests, regression tests for deleted behavior, and performative coverage.
 12. Use **concise comments** to explain intent and usage. Update them when behavior changes.
 13. Reuse the project’s existing **names**, **terminology**, and **architecture patterns**.
 14. Mark deliberate limits with a comment that names the limit and its upgrade condition.
