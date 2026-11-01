@@ -7,9 +7,11 @@ import { buildRequestBody } from "../src/provider/request-body.ts";
 
 const CONTRIBUTIONS_KEY = Symbol.for("pi-developer-messages/developer-messages/v1");
 const PAYLOAD_ADAPTERS_KEY = Symbol.for("pi-developer-messages/provider-payload-adapters/v1");
+const ENVELOPE_SERVICE_KEY = Symbol.for("pi-developer-messages/envelope-service/v1");
 const slots = globalThis as typeof globalThis & Record<symbol, unknown>;
 let previousRegistry: unknown;
 let previousPayloadAdapters: unknown;
+let previousEnvelopeService: PropertyDescriptor | undefined;
 
 // type-boundary: These records model the small subset of the external Pi extension API used by this harness.
 type TestRecord = Record<string, unknown>;
@@ -18,6 +20,7 @@ type Handler = (event: TestRecord, context: TestRecord) => TestRecord | undefine
 beforeEach(() => {
 	previousRegistry = slots[CONTRIBUTIONS_KEY];
 	previousPayloadAdapters = slots[PAYLOAD_ADAPTERS_KEY];
+	previousEnvelopeService = Object.getOwnPropertyDescriptor(globalThis, ENVELOPE_SERVICE_KEY);
 	slots[CONTRIBUTIONS_KEY] = new Map();
 	slots[PAYLOAD_ADAPTERS_KEY] = new Map();
 });
@@ -25,6 +28,8 @@ beforeEach(() => {
 afterEach(() => {
 	slots[CONTRIBUTIONS_KEY] = previousRegistry;
 	slots[PAYLOAD_ADAPTERS_KEY] = previousPayloadAdapters;
+	if (previousEnvelopeService) Object.defineProperty(globalThis, ENVELOPE_SERVICE_KEY, previousEnvelopeService);
+	else Reflect.deleteProperty(globalThis, ENVELOPE_SERVICE_KEY);
 });
 
 test("Codex keeps the base prompt, skill catalogue, AGENTS.md, and user request in their owned roles", () => {
