@@ -31,11 +31,3 @@ links = [
 trees = ["agent/packages", "agent/themes"]
 package_trees = ["agent/packages"]
 seeds = []
-
-[[harnesses]]
-name = "pi-skills"
-source = "skills"
-target = ".pi/agent/skills"
-links = []
-trees = ["."]
-seeds = []
