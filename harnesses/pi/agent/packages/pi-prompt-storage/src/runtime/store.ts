@@ -1,31 +1,38 @@
-import { mkdir } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { SessionManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { openSqlite, type SqliteDatabase } from "../native/sqlite.ts";
 import type { IndexProgress, PromptItem, PromptStorageConfig } from "../core/model.ts";
 
-function contentBlocks(value: unknown): readonly Record<string, unknown>[] {
-	return Array.isArray(value)
-		? value.filter((part): part is Record<string, unknown> => part !== null && typeof part === "object")
-		: [];
-}
+type PromptContext = Pick<ExtensionContext, "cwd"> & {
+	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionFile" | "getSessionName" | "getEntries">;
+};
 
-function textContent(value: unknown): string {
-	if (typeof value === "string") return value.trim();
-	return contentBlocks(value)
-		.filter((part) => part.type === "text" && typeof part.text === "string")
-		.map((part) => String(part.text).trim())
+// type-boundary: Pi session files can contain malformed message content; promptContent validates each block.
+type SessionContentBoundary = unknown;
+
+function promptContent(
+	content: SessionContentBoundary,
+	includeSlashCommands: boolean,
+): Pick<PromptItem, "text" | "hasImages"> | undefined {
+	const blocks: readonly SessionContentBoundary[] = Array.isArray(content) ? content : [];
+	const textParts = typeof content === "string" ? [content] : [];
+	let hasImages = false;
+	for (const block of blocks) {
+		if (!block || typeof block !== "object" || !("type" in block)) continue;
+		if (block.type === "text" && "text" in block && typeof block.text === "string") textParts.push(block.text);
+		if (block.type === "image") hasImages = true;
+	}
+	const text = textParts
+		.map((part) => part.trim())
 		.filter(Boolean)
-		.join("\n")
-		.trim();
+		.join("\n");
+	if (!text || (!includeSlashCommands && text.startsWith("/"))) return undefined;
+	return { text, hasImages };
 }
 
-function containsImage(value: unknown): boolean {
-	return contentBlocks(value).some((part) => part.type === "image");
-}
-
-function timestamp(value: unknown, fallback: number): number {
+function timestamp(value: string | number, fallback: number): number {
 	if (typeof value === "number" && Number.isFinite(value)) return value;
 	if (typeof value === "string") {
 		const parsed = new Date(value).getTime();
@@ -41,10 +48,6 @@ function rowString(row: Record<string, unknown>, key: string): string {
 function rowNumber(row: Record<string, unknown>, key: string): number {
 	const value = row[key];
 	return typeof value === "number" ? value : Number(value);
-}
-
-function slashCommand(text: string): boolean {
-	return text.trimStart().startsWith("/");
 }
 
 function searchText(text: string, sessionName?: string): string {
@@ -77,12 +80,13 @@ export class PromptStorageStore {
 
 	private readonly refreshIntervalMs = 30_000;
 
-	private async database(): Promise<SqliteDatabase> {
+	private database(): SqliteDatabase {
 		if (this.db) return this.db;
 		const path = join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "pi", "prompt-storage.sqlite");
-		await mkdir(dirname(path), { recursive: true });
-		this.db = openSqlite(path);
-		this.db.exec(`
+		mkdirSync(dirname(path), { recursive: true });
+		const database = openSqlite(path);
+		try {
+			database.exec(`
 			PRAGMA journal_mode = WAL;
 			PRAGMA foreign_keys = ON;
 			CREATE TABLE IF NOT EXISTS stashes (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, cwd TEXT NOT NULL, created_at INTEGER NOT NULL);
@@ -95,60 +99,67 @@ export class PromptStorageStore {
 			CREATE INDEX IF NOT EXISTS idx_stashes_created_at ON stashes(created_at DESC);
 			CREATE INDEX IF NOT EXISTS idx_history_prompt_ts ON history_prompts(prompt_ts DESC);
 		`);
-		return this.db;
+		} catch (error) {
+			database.close();
+			throw error;
+		}
+		this.db = database;
+		return database;
 	}
 
 	async insert(text: string, cwd: string): Promise<number> {
-		const result = (await this.database())
+		const result = this.database()
 			.prepare("INSERT INTO stashes (text, cwd, created_at) VALUES (?, ?, ?)")
 			.run(text, cwd, Date.now());
 		return Number(result.lastInsertRowid);
 	}
 
 	async remove(id: number): Promise<void> {
-		(await this.database()).prepare("DELETE FROM stashes WHERE id = ?").run(id);
+		this.database().prepare("DELETE FROM stashes WHERE id = ?").run(id);
 	}
 
 	async listStashes(cwd: string): Promise<PromptItem[]> {
-		return (await this.database())
-			.prepare("SELECT id, text, cwd, created_at FROM stashes WHERE cwd = ? ORDER BY created_at DESC")
+		return this.database()
+			.prepare("SELECT id, text, cwd, created_at FROM stashes WHERE cwd = ? ORDER BY created_at DESC, id DESC")
 			.all(cwd)
 			.map((row) => itemFromRow(row, "stash"));
 	}
 
-	currentPrompts(ctx: ExtensionContext, config: PromptStorageConfig): PromptItem[] {
+	currentPrompts(ctx: PromptContext, config: PromptStorageConfig): PromptItem[] {
 		const sessionPath = ctx.sessionManager.getSessionFile();
 		if (!sessionPath) return [];
 		const sessionName = ctx.sessionManager.getSessionName() ?? undefined;
 		return ctx.sessionManager.getEntries().flatMap((entry) => {
 			if (entry.type !== "message" || entry.message.role !== "user") return [];
-			const text = textContent(entry.message.content);
-			if (!text || (!config.history.includeSlashCommands && slashCommand(text))) return [];
+			const prompt = promptContent(entry.message.content, config.history.includeSlashCommands);
+			if (!prompt) return [];
 			return [
 				{
 					kind: "history",
 					id: entry.id,
-					text,
+					...prompt,
 					timestamp: timestamp(entry.message.timestamp, timestamp(entry.timestamp, Date.now())),
 					cwd: ctx.cwd,
 					sessionPath,
 					sessionName,
-					hasImages: containsImage(entry.message.content),
 				},
 			];
 		});
 	}
 
-	branchPrompts(ctx: ExtensionContext, config: PromptStorageConfig): string[] {
+	branchPrompts(
+		ctx: { sessionManager: Pick<ExtensionContext["sessionManager"], "getBranch"> },
+		config: PromptStorageConfig,
+	): string[] {
 		return ctx.sessionManager.getBranch().flatMap((entry) => {
 			if (entry.type !== "message" || entry.message.role !== "user") return [];
-			const text = textContent(entry.message.content);
-			return text && (config.history.includeSlashCommands || !slashCommand(text)) ? [text] : [];
+			const prompt = promptContent(entry.message.content, config.history.includeSlashCommands);
+			return prompt ? [prompt.text] : [];
 		});
 	}
 
-	async listHistory(ctx: ExtensionContext, config: PromptStorageConfig): Promise<PromptItem[]> {
-		const rows = (await this.database())
+	async listHistory(ctx: PromptContext, config: PromptStorageConfig): Promise<PromptItem[]> {
+		const rows = this.database()
 			.prepare(
 				"SELECT session_path, entry_id, text, cwd, session_name, prompt_ts, has_images FROM history_prompts WHERE cwd = ? ORDER BY prompt_ts DESC",
 			)
@@ -166,7 +177,7 @@ export class PromptStorageStore {
 		this.listeners.set(cwd, listeners);
 		return () => {
 			listeners.delete(listener);
-			if (listeners.size === 0) this.listeners.delete(cwd);
+			if (listeners.size === 0 && this.listeners.get(cwd) === listeners) this.listeners.delete(cwd);
 		};
 	}
 
@@ -190,9 +201,10 @@ export class PromptStorageStore {
 	}
 
 	async close(): Promise<void> {
+		await Promise.all(this.refreshes.values());
 		this.db?.close();
 		this.db = undefined;
-		this.refreshes.clear();
+		this.refreshedAt.clear();
 		this.progressState.clear();
 	}
 
@@ -202,7 +214,7 @@ export class PromptStorageStore {
 	}
 
 	private async refresh(cwd: string, config: PromptStorageConfig): Promise<void> {
-		const database = await this.database();
+		const database = this.database();
 		const sessions = await SessionManager.list(cwd, undefined, (loaded, total) =>
 			this.setProgress(cwd, { phase: "sessions", loaded, total }),
 		);
@@ -225,17 +237,17 @@ export class PromptStorageStore {
 				);
 				for (const entry of manager.getEntries()) {
 					if (entry.type !== "message" || entry.message.role !== "user") continue;
-					const text = textContent(entry.message.content);
-					if (!text || (!config.history.includeSlashCommands && slashCommand(text))) continue;
+					const prompt = promptContent(entry.message.content, config.history.includeSlashCommands);
+					if (!prompt) continue;
 					insert.run(
 						session.path,
 						entry.id,
-						text,
+						prompt.text,
 						session.cwd,
 						session.name ?? null,
 						timestamp(entry.message.timestamp, timestamp(entry.timestamp, modifiedMs)),
-						containsImage(entry.message.content) ? 1 : 0,
-						searchText(text, session.name ?? undefined),
+						prompt.hasImages ? 1 : 0,
+						searchText(prompt.text, session.name ?? undefined),
 					);
 				}
 				database

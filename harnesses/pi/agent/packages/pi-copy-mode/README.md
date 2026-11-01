@@ -254,6 +254,7 @@ or native executable is registered.
 | Action IDs, keybinding loading and matching | `src/config/keybindings.ts` |
 | Copy and reaction settings | `src/config/settings.ts` |
 | Modal host: input, selection kinds, copy, selection requests, folds | `src/runtime/copy-mode.ts` |
+| Selection text, geometry, and annotation anchors | `src/runtime/selection.ts` |
 | Validated fullscreen surface and clipboard fallback | `src/runtime/fullscreen-surface.ts` |
 | Cursor clamping and basic motions | `src/core/cursor.ts` |
 | Word, find, paragraph motions | `src/core/vim-motions.ts` |

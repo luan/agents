@@ -126,16 +126,16 @@ export class FullscreenOverlay implements Component, Focusable {
 		const child = this.child as PointerComponent;
 		if (typeof child.onMouse !== "function") return blocksSelection;
 		const translated = { ...event, row: event.row - 1, col: event.col - 1 };
-		if (
+		const clipped =
 			event.type !== "leave" &&
 			(translated.row < 0 ||
 				translated.row >= this.childHeight ||
 				translated.col < 0 ||
-				translated.col >= this.childWidth)
-		)
-			return blocksSelection;
+				translated.col >= this.childWidth);
+		if (clipped) translated.type = "leave";
 		try {
-			return Reflect.apply(child.onMouse, child, [translated]) === true || blocksSelection;
+			const handled = child.onMouse(translated) === true;
+			return (!clipped && handled) || blocksSelection;
 		} catch {
 			return blocksSelection;
 		}

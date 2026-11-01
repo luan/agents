@@ -38,14 +38,7 @@ import {
 	resolveCodexWebSocketUrl,
 } from "./headers.ts";
 import { codexDiagnosticsFailure, noThrowCodexDiagnosticsSink } from "./diagnostic-failure.ts";
-import {
-	combineAbortSignals,
-	compressRequestBodyZstd,
-	createSSEHeaderTimeout,
-	normalizeTimeoutMs,
-	parseSSE,
-	sleep,
-} from "./sse.ts";
+import { compressRequestBodyZstd, createSSEHeaderTimeout, normalizeTimeoutMs, parseSSE, sleep } from "./sse.ts";
 import {
 	assertSuccessfulCodexOutput,
 	CodexProtocolError,
@@ -208,19 +201,18 @@ async function openCodexSSE<TApi extends Api>(
 		let response: Response;
 		try {
 			const headerTimeout = createSSEHeaderTimeout(DEFAULT_SSE_HEADER_TIMEOUT_MS);
-			const combinedSignal = combineAbortSignals([options?.signal, headerTimeout.signal]);
+			const signal = AbortSignal.any([options?.signal, headerTimeout.signal].filter((value) => value !== undefined));
 			try {
 				response = await requestFetch(resolveCodexUrl(model.baseUrl), {
 					method: "POST",
 					headers: withCodexTurnStateHeader(baseHeaders, turnState),
 					body: toRequestBody(body),
-					signal: combinedSignal.signal,
+					signal,
 				});
 			} catch (error) {
 				const timeoutError = headerTimeout.error();
 				throw timeoutError && !options?.signal?.aborted ? timeoutError : error;
 			} finally {
-				combinedSignal.cleanup();
 				headerTimeout.clear();
 			}
 		} catch (error) {
@@ -235,14 +227,16 @@ async function openCodexSSE<TApi extends Api>(
 			throw lastError;
 		}
 
-		if (response.ok) turnState?.capture(response.headers.get(CODEX_TURN_STATE_HEADER));
-		await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+		try {
+			if (response.ok) turnState?.capture(response.headers.get(CODEX_TURN_STATE_HEADER));
+			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+		} catch (error) {
+			await response.body?.cancel().catch(() => {});
+			throw error;
+		}
 		if (response.ok) return response;
 
-		const errorText = await response.text();
-		const info = await parseErrorResponse(
-			new Response(errorText, { status: response.status, statusText: response.statusText }),
-		);
+		const info = await parseErrorResponse(response);
 		const message = info.friendlyMessage || info.message;
 		if (info.code === "server_is_overloaded" || info.code === "slow_down") {
 			throw createCodexHttpError(message, info.code, response.status);
@@ -474,7 +468,12 @@ export function createCodexTransportStream<TApi extends Api>(
 						}
 						if (!fallbackArmed) {
 							recordFailure("websocket", error);
-							if (websocketStarted && !(error instanceof CodexProtocolError) && !isCodexApiError(error)) {
+							if (
+								websocketStarted &&
+								!(error instanceof CodexProtocolError) &&
+								!(error instanceof NonRetryableProviderError) &&
+								!isCodexApiError(error)
+							) {
 								throw new NonRetryableProviderError(
 									"Codex stream ended after output began and cannot be continued from its incomplete response.",
 								);

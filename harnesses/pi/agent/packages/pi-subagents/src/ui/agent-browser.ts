@@ -18,15 +18,19 @@ import {
 	FullscreenOverlay,
 	fullscreenOverlayOptions,
 	mountConfiguredAnimation,
+	RenderedLinesCache,
 	SelectableList,
 	stripTopLevelZoneMarkers,
 	tuiTheme,
 } from "@luan.sh/pi-libtui";
+import type {
+	AgentCustomMessageRendererResolver,
+	AgentPresentationResolverLookup,
+	AgentToolRendererResolver,
+} from "../protocol/presentation.ts";
 import type { SubagentSnapshot, TranscriptSource } from "../runtime/coordinator.ts";
-import type { AgentPresentationResolverLookup } from "../protocol/presentation.ts";
 import { renderAgentIdentity, renderAgentMetadata } from "./agent-summary.ts";
 import { type AgentTreeRow, agentDisplayName, agentTreeRows } from "./agent-tree.ts";
-import type { AgentCustomMessageRendererResolver, AgentToolRendererResolver } from "../protocol/presentation.ts";
 
 type HostTheme = Parameters<typeof tuiTheme>[0];
 export type AgentHubAgentSnapshot = SubagentSnapshot & { readonly transcript: TranscriptSource };
@@ -39,9 +43,6 @@ export interface AgentHubSnapshotSource {
 	subscribe(notify: (snapshot: AgentHubSnapshot) => void): () => void;
 }
 
-interface CachedBlock {
-	lines: string[];
-}
 type ToolCallPart = Extract<Extract<AgentMessage, { role: "assistant" }>["content"][number], { type: "toolCall" }>;
 type ToolResult = Extract<AgentMessage, { role: "toolResult" }>;
 interface LiveTool {
@@ -53,7 +54,7 @@ interface LiveTool {
 
 /** Presentation-only Pi transcript renderer. It never executes a tool. */
 export class AgentTranscriptRenderer {
-	private readonly settled = new Map<string, Map<string, CachedBlock>>();
+	private readonly settled = new Map<string, RenderedLinesCache>();
 	private readonly tools = new Map<string, LiveTool>();
 	private generation = -1;
 
@@ -82,7 +83,7 @@ export class AgentTranscriptRenderer {
 			const liveTail = streaming && index === lastRenderableIndex;
 			if (message.role === "assistant") {
 				lines.push(
-					...this.renderCached(messageIdentity(message, index), generation, width, liveTail, () =>
+					...this.renderCached(messageIdentity(message, index), width, liveTail, () =>
 						this.renderAssistantMessage(message, width, liveTail),
 					),
 				);
@@ -91,15 +92,13 @@ export class AgentTranscriptRenderer {
 					const result = results.get(part.id);
 					const identity = result ? `tool:${part.id}:${result.timestamp}:${result.isError}` : `tool:${part.id}:pending`;
 					lines.push(
-						...this.renderCached(identity, generation, width, liveTail && !result, () =>
-							this.renderTool(part, result, width),
-						),
+						...this.renderCached(identity, width, liveTail && !result, () => this.renderTool(part, result, width)),
 					);
 				}
 				continue;
 			}
 			lines.push(
-				...this.renderCached(messageIdentity(message, index), generation, width, liveTail, () =>
+				...this.renderCached(messageIdentity(message, index), width, liveTail, () =>
 					this.renderMessage(message, width),
 				),
 			);
@@ -107,23 +106,19 @@ export class AgentTranscriptRenderer {
 		return stripTopLevelZoneMarkers(lines);
 	}
 
-	private renderCached(
-		identity: string,
-		generation: number,
-		width: number,
-		live: boolean,
-		render: () => string[],
-	): string[] {
-		const cacheKey = `${generation}:${width}`;
-		const cached = this.settled.get(identity)?.get(cacheKey);
-		if (!live && cached) return cached.lines;
-		const lines = render();
-		if (!live) {
-			const cache = this.settled.get(identity) ?? new Map<string, CachedBlock>();
-			cache.set(cacheKey, { lines });
+	invalidate(): void {
+		this.settled.clear();
+		for (const tool of this.tools.values()) tool.component.invalidate();
+	}
+
+	private renderCached(identity: string, width: number, live: boolean, render: () => string[]): string[] {
+		if (live) return render();
+		let cache = this.settled.get(identity);
+		if (!cache) {
+			cache = new RenderedLinesCache();
 			this.settled.set(identity, cache);
 		}
-		return lines;
+		return cache.get(width, "", render);
 	}
 
 	private renderMessage(message: Exclude<AgentMessage, { role: "assistant" | "toolResult" }>, width: number): string[] {
@@ -336,6 +331,7 @@ export class AgentHub {
 
 	invalidate(): void {
 		this.list.invalidate();
+		for (const renderer of this.renderers.values()) renderer.invalidate();
 	}
 
 	dispose(): void {

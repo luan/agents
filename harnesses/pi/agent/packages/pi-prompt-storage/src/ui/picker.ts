@@ -146,7 +146,7 @@ export function createStashPicker(
 	return picker;
 }
 
-class PromptPicker implements Component, Focusable {
+class HistoryPicker implements Component, Focusable {
 	private readonly input: SemanticInput;
 	private readonly list: SelectableList<PromptItem>;
 	private filtered: PromptItem[];
@@ -162,30 +162,28 @@ class PromptPicker implements Component, Focusable {
 		private readonly title: string,
 		private readonly items: readonly PromptItem[],
 		private readonly config: PromptStorageConfig,
-		private readonly mode: PromptKind,
 		private readonly done: (result: PickerResult | null) => void,
 		index: PromptIndexView,
 		cwd?: string,
 	) {
 		this.input = new SemanticInput(theme);
 		this.filtered = filterPrompts(items, "", config.history.maxResults);
-		if (cwd) {
-			this.progress = this.progressLabel(index.progress(cwd));
-			this.stopWatching = index.watch(cwd, (next) => {
-				this.progress = this.progressLabel(next);
-				this.applyFilter();
-				this.tui.requestRender();
-			});
-		}
+
 		this.list = new SelectableList({
 			items: this.filtered,
 			maxVisible: config.picker.maxVisible,
 			activateOnClick: false,
 			renderItem: (item, context) => this.renderItem(item, context),
 			requestRender: () => this.tui.requestRender(),
-			onActivate: (item) =>
-				this.choose(this.mode === "stash" && config.picker.enterAction === "pop" ? "pop" : "apply", item),
+			onActivate: (item) => this.finish({ item, action: "apply" }),
 		});
+		if (cwd) {
+			this.progress = this.progressLabel(index.progress(cwd));
+			this.stopWatching = index.watch(cwd, (next) => {
+				this.progress = this.progressLabel(next);
+				this.tui.requestRender();
+			});
+		}
 	}
 
 	get focused(): boolean {
@@ -202,13 +200,13 @@ class PromptPicker implements Component, Focusable {
 			this.finish(null);
 			return;
 		}
-		if (matchesKey(data, Key.up) || matchesKey(data, Key.ctrl("p"))) this.list.handleInput(Key.up);
-		else if (matchesKey(data, Key.down) || matchesKey(data, Key.ctrl("n"))) this.list.handleInput(Key.down);
-		else if (matchesKey(data, Key.pageUp)) this.list.handleInput(Key.pageUp);
-		else if (matchesKey(data, Key.pageDown)) this.list.handleInput(Key.pageDown);
+		if (matchesKey(data, Key.up) || matchesKey(data, Key.ctrl("p"))) this.list.handleInput("k");
+		else if (matchesKey(data, Key.down) || matchesKey(data, Key.ctrl("n"))) this.list.handleInput("j");
+		else if (matchesKey(data, Key.pageUp))
+			this.list.setSelectedIndex(this.list.getSelectedIndex() - this.config.picker.maxVisible);
+		else if (matchesKey(data, Key.pageDown))
+			this.list.setSelectedIndex(this.list.getSelectedIndex() + this.config.picker.maxVisible);
 		else if (matchesKey(data, Key.enter) || keys.matches(data, "tui.select.confirm")) this.activateSelected();
-		else if (this.mode === "stash" && matchesKey(data, Key.ctrl("a"))) this.activateSelected("apply");
-		else if (this.mode === "stash" && matchesKey(data, Key.ctrl("x"))) this.activateSelected("drop");
 		else {
 			this.input.handleInput(data);
 			this.applyFilter();
@@ -248,14 +246,7 @@ class PromptPicker implements Component, Focusable {
 		this.listHeight = listLines.length;
 		lines.push(...listLines.map((line) => ` ${line}`));
 		if (this.filtered.length === 0) lines.push(` ${colors.fg("warning", "No matching prompts")}`);
-		lines.push(
-			colors.fg(
-				"text.muted",
-				this.mode === "stash"
-					? "enter pop · ctrl+a apply · ctrl+x drop · ↑↓ move · esc cancel"
-					: "enter apply · ↑↓ move · esc cancel",
-			),
-		);
+		lines.push(colors.fg("text.muted", "enter apply · ↑↓ move · esc cancel"));
 		lines.push(border(`╰${"─".repeat(inner)}╯`));
 		return [
 			lines[0]!,
@@ -268,8 +259,7 @@ class PromptPicker implements Component, Focusable {
 		const colors = tuiTheme(this.theme);
 		const prefix = context.selected ? colors.fg("accent", "❯ ") : "  ";
 		const source = highlighted(sourceLabel(item), this.input.getValue(), this.theme, context.selected);
-		const text =
-			item.kind === "stash" ? "" : highlighted(preview(item.text, 70), this.input.getValue(), this.theme, false);
+		const text = highlighted(preview(item.text, 70), this.input.getValue(), this.theme, false);
 		const cwd = colors.fg("text.muted", relative(process.env.HOME ?? "", item.cwd) || item.cwd);
 		const image = item.hasImages ? colors.fg("warning", " 🖼") : "";
 		return `${prefix}${source}${image} ${colors.fg("text.muted", dateLabel(item.timestamp))}${text ? ` ${text}` : ""} ${cwd}`;
@@ -279,20 +269,18 @@ class PromptPicker implements Component, Focusable {
 		this.filtered = filterPrompts(this.items, this.input.getValue(), this.config.history.maxResults);
 		this.list.setItems(this.filtered);
 	}
-	private activateSelected(action?: PromptAction): void {
+	private activateSelected(): void {
 		const item = this.list.getSelectedItem();
-		if (item)
-			this.choose(
-				action ?? (this.mode === "stash" && this.config.picker.enterAction === "pop" ? "pop" : "apply"),
-				item,
-			);
+		if (item) this.finish({ item, action: "apply" });
 	}
-	private choose(action: PromptAction, item: PromptItem): void {
-		this.finish({ item, action });
-	}
-	private finish(result: PickerResult | null): void {
+
+	dispose(): void {
 		this.stopWatching?.();
 		this.stopWatching = undefined;
+	}
+
+	private finish(result: PickerResult | null): void {
+		this.dispose();
 		this.done(result);
 	}
 	private progressLabel(progress: IndexProgress | undefined): string | undefined {
@@ -318,7 +306,7 @@ export async function openPromptPicker(
 		(tui, theme, keys, done) =>
 			mode === "stash"
 				? createStashPicker(tui, theme, keys, done, items, config, selected)
-				: new PromptPicker(tui, theme, title, items, config, mode, done, index, ctx.cwd),
+				: new HistoryPicker(tui, theme, title, items, config, done, index, ctx.cwd),
 		{
 			overlay: true,
 			overlayOptions:

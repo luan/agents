@@ -177,6 +177,9 @@ export function createTerminalBridgeClient({
 		spawned.stderr.on("data", (data: Buffer) => {
 			stderr = `${stderr}${data.toString("utf8")}`.slice(-16_000);
 		});
+		for (const pipe of [spawned.stdin, spawned.stdout, spawned.stderr]) {
+			pipe.on("error", (error) => fail(spawned, error));
+		}
 		spawned.on("error", (error) => fail(spawned, error));
 		spawned.on("close", (code, signal) => {
 			const status = code === null ? `signal ${signal}` : `code ${code}`;
@@ -200,7 +203,7 @@ export function createTerminalBridgeClient({
 			};
 			try {
 				bridge.stdin.write(`${JSON.stringify({ ...value, request_id: requestId })}\n`, (error) => {
-					if (error) rejectWrite(error);
+					if (error) fail(bridge, error);
 				});
 			} catch (error) {
 				rejectWrite(error instanceof Error ? error : new Error("terminal bridge write failed"));

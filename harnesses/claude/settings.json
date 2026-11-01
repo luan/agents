@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.config/bootty/integrations/claude/bootty-hook.sh",
+            "command": "\"$HOME/.config/bootty/integrations/claude/bootty-hook.sh\"",
             "timeout": 2
           }
         ]
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.config/bootty/integrations/claude/bootty-hook.sh",
+            "command": "\"$HOME/.config/bootty/integrations/claude/bootty-hook.sh\"",
             "timeout": 2
           }
         ]
@@ -58,7 +58,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.config/bootty/integrations/claude/bootty-hook.sh",
+            "command": "\"$HOME/.config/bootty/integrations/claude/bootty-hook.sh\"",
             "timeout": 2
           }
         ]
@@ -80,7 +80,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.config/bootty/integrations/claude/bootty-hook.sh",
+            "command": "\"$HOME/.config/bootty/integrations/claude/bootty-hook.sh\"",
             "timeout": 2
           }
         ]
@@ -101,7 +101,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.config/bootty/integrations/claude/bootty-hook.sh",
+            "command": "\"$HOME/.config/bootty/integrations/claude/bootty-hook.sh\"",
             "timeout": 2
           }
         ]
@@ -112,7 +112,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.config/bootty/integrations/claude/bootty-hook.sh",
+            "command": "\"$HOME/.config/bootty/integrations/claude/bootty-hook.sh\"",
             "timeout": 2
           }
         ]
@@ -132,7 +132,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.config/bootty/integrations/claude/bootty-hook.sh",
+            "command": "\"$HOME/.config/bootty/integrations/claude/bootty-hook.sh\"",
             "timeout": 1
           }
         ]

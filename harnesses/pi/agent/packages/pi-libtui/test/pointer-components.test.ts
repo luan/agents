@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { ComponentStack } from "../src/component-stack.ts";
+import { DialogButtonBar } from "../src/controls/dialog-button-bar.ts";
 import { TabBar } from "../src/controls/tab.ts";
 import type { TuiMouseEvent } from "../src/mouse.ts";
 import { DialogOverlay } from "../src/overlay/dialog.ts";
@@ -49,9 +51,9 @@ describe("structural pointer components", () => {
 		expect(events[0]).toMatchObject({ row: 1, col: 2, screenRow: 12, screenCol: 23 });
 		expect(overlay.onMouse(mouse("move", 0, 3))).toBe(false);
 		expect(overlay.onMouse(mouse("press", 0, 3, 0))).toBe(true);
-		expect(events).toHaveLength(1);
+		expect(events.slice(1).map((event) => event.type)).toEqual(["leave", "leave"]);
 		expect(overlay.onMouse(mouse("leave", 0, 0))).toBe(true);
-		expect(events[1]).toMatchObject({ type: "leave", row: -1, col: -1 });
+		expect(events.at(-1)).toMatchObject({ type: "leave", row: -1, col: -1 });
 
 		const brokenChild = {
 			render: () => [],
@@ -148,4 +150,34 @@ describe("structural pointer components", () => {
 		tabs.onMouse(mouse("release", 0, 10, 0));
 		expect(moved).toEqual([{ id: "one", from: 0, to: 1 }]);
 	});
+});
+
+test.each(["fullscreen", "dialog"] as const)("%s borders clear child hover and pending clicks", (kind) => {
+	const activated: string[] = [];
+	const buttons = new DialogButtonBar({
+		theme,
+		buttons: [
+			{ value: "action", label: "Action", align: "start", foreground: "text.primary", background: "surface.editor" },
+		],
+		requestRender() {},
+		onActivate: (value) => activated.push(value),
+	});
+	const stack = new ComponentStack([buttons]);
+	const overlay =
+		kind === "fullscreen"
+			? new FullscreenOverlay({ terminal: { rows: 4 }, requestRender() {} } as never, theme, stack)
+			: new DialogOverlay(theme, stack);
+	try {
+		const initial = overlay.render(30);
+		overlay.onMouse(mouse("move", 1, 3));
+		expect(overlay.render(30)).not.toEqual(initial);
+		overlay.onMouse(mouse("move", 0, 3));
+		expect(overlay.render(30)).toEqual(initial);
+		overlay.onMouse(mouse("press", 1, 3, 0));
+		overlay.onMouse(mouse("release", 0, 3, 0));
+		overlay.onMouse(mouse("release", 1, 3, 0));
+		expect(activated).toEqual([]);
+	} finally {
+		if (overlay instanceof FullscreenOverlay) overlay.dispose();
+	}
 });

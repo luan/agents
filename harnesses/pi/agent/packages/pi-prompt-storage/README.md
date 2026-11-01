@@ -147,4 +147,5 @@ Source: https://github.com/luan/agents, directory
 
 Tests cover search ranking and highlighting (`test/model.test.ts`), the stash
 picker's keys and overlay placement (`test/picker.test.ts`), and the widget
-line (`test/widget.test.ts`).
+line (`test/widget.test.ts`), and storage shutdown, prompt indexing, and stash
+ordering (`test/store.test.ts`).

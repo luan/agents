@@ -35,8 +35,6 @@ export function closeOpenAICodexProvider(): void {
 export { CodexProviderRuntime } from "./runtime.ts";
 export type {
 	CodexCompactionPrewarmInput,
-	CodexRuntimePlan,
-	CodexRuntimeState,
 	CodexProviderRuntimeOptions,
 } from "./runtime.ts";
 export { buildRequestBody } from "./request-body.ts";

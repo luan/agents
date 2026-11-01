@@ -113,18 +113,7 @@ test("compaction prewarm sends the exact replay body and caches only that identi
 			bodies.push(body);
 		},
 	});
-	const payload = Buffer.from(
-		JSON.stringify({
-			"https://api.openai.com/auth": { chatgpt_account_id: "account-1" },
-		}),
-	).toString("base64url");
-	const internal = runtime as unknown as {
-		requestAuth: Map<string, { apiKey: string }>;
-	};
-	internal.requestAuth.set("session-1", { apiKey: `header.${payload}.signature` });
-	const model = getCodexModels().find((candidate) => candidate.id === "gpt-5.6-sol");
-	expect(model).toBeDefined();
-	if (!model) throw new Error("The test model is missing");
+	const model = await initializeSession(runtime, "prewarm-identity");
 
 	const body: ResponsesBody = {
 		...baseBody,
@@ -133,14 +122,174 @@ test("compaction prewarm sends the exact replay body and caches only that identi
 			{ type: "compaction", encrypted_content: "opaque" },
 		],
 	};
-	await runtime.startCompactionPrewarm({ sessionId: "session-1", model, body });
-	await runtime.startCompactionPrewarm({ sessionId: "session-1", model, body });
+	await runtime.startCompactionPrewarm({ sessionId: "prewarm-identity", model, body });
+	await runtime.startCompactionPrewarm({ sessionId: "prewarm-identity", model, body });
 
 	expect(bodies).toEqual([body]);
 	expect(bodies[0]).toBe(body);
 	expect(bodies[0]).not.toHaveProperty("compaction_trigger");
 
 	const changedBody = { ...body, instructions: "A new final Pi system prompt." };
-	await runtime.startCompactionPrewarm({ sessionId: "session-1", model, body: changedBody });
+	await runtime.startCompactionPrewarm({ sessionId: "prewarm-identity", model, body: changedBody });
 	expect(bodies).toEqual([body, changedBody]);
+});
+
+async function initializeSession(runtime: CodexProviderRuntime, sessionId: string) {
+	const model = getCodexModels()[0];
+	if (!model) throw new Error("No registered models");
+
+	const result = await runtime
+		.stream(
+			model,
+			{ messages: [] },
+			{
+				sessionId,
+				apiKey: testApiKey(),
+				transport: "sse",
+				fetch: Object.assign(
+					async () =>
+						new Response('data: {"type":"response.completed","response":{"id":"test","status":"completed"}}\n\n'),
+					{ preconnect() {} },
+				),
+			},
+		)
+		.result();
+	expect(result.stopReason).toBe("stop");
+	return model;
+}
+
+test.each(["superseded", "shutdown"] as const)("a %s prewarm cannot overwrite later session state", async (reason) => {
+	const pending: Array<{
+		signal: AbortSignal | undefined;
+		completion: ReturnType<typeof Promise.withResolvers<void>>;
+	}> = [];
+	const runtime = new CodexProviderRuntime({
+		prewarmTransport: async (_url, _body, _headers, _account, options) => {
+			const completion = Promise.withResolvers<void>();
+			pending.push({ signal: options?.signal, completion });
+			await completion.promise;
+		},
+	});
+	const sessionId = `prewarm-${reason}`;
+	const model = await initializeSession(runtime, sessionId);
+	try {
+		const first = runtime.startCompactionPrewarm({ sessionId, model, body: baseBody });
+		expect(pending).toHaveLength(1);
+		const changedBody = { ...baseBody, instructions: "new request" };
+		if (reason === "superseded") {
+			const second = runtime.startCompactionPrewarm({ sessionId, model, body: changedBody });
+			expect(pending).toHaveLength(2);
+			pending[1]!.completion.resolve();
+			await second;
+		} else runtime.shutdown();
+		expect(pending[0]!.signal?.aborted).toBe(true);
+		pending[0]!.completion.resolve();
+		await first;
+		await runtime.startCompactionPrewarm({ sessionId, model, body: changedBody });
+		expect(pending).toHaveLength(reason === "superseded" ? 2 : 1);
+	} finally {
+		runtime.shutdown();
+		for (const request of pending) request.completion.resolve();
+	}
+});
+
+function testApiKey(): string {
+	const payload = Buffer.from(
+		JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-1" } }),
+	).toString("base64url");
+	return `test.${payload}.test`;
+}
+
+test.each(["session", "runtime", "unscoped"] as const)("%s shutdown aborts active SSE requests", async (scope) => {
+	const runtime = new CodexProviderRuntime();
+	const model = getCodexModels()[0];
+	if (!model) throw new Error("No registered models");
+	const sessionId = `shutdown-${scope}`;
+	const userAbort = new AbortController();
+	const started = Promise.withResolvers<AbortSignal>();
+	const result = runtime
+		.stream(
+			model,
+			{ messages: [] },
+			{
+				sessionId: scope === "unscoped" ? undefined : sessionId,
+				apiKey: testApiKey(),
+				transport: "sse",
+				signal: userAbort.signal,
+				fetch: Object.assign(
+					async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+						const signal = init?.signal;
+						if (!signal) throw new Error("Missing request cancellation");
+						started.resolve(signal);
+						return new Promise<Response>((_resolve, reject) => {
+							signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+						});
+					},
+					{ preconnect() {} },
+				),
+			},
+		)
+		.result();
+	try {
+		const signal = await started.promise;
+		if (scope === "session")
+			runtime.shutdownSession({
+				sessionManager: {
+					getSessionId: () => sessionId,
+					getSessionFile: () => undefined,
+				},
+			});
+		else runtime.shutdown();
+		expect(signal.aborted).toBe(true);
+		expect((await result).stopReason).toBe("aborted");
+	} finally {
+		userAbort.abort();
+		await result;
+		runtime.shutdown();
+	}
+});
+
+test("session shutdown still aborts a concurrent stream after another completes", async () => {
+	const runtime = new CodexProviderRuntime();
+	const model = getCodexModels()[0];
+	if (!model) throw new Error("No registered models");
+	const sessionId = "concurrent-stream-shutdown";
+	const started = Promise.withResolvers<void>();
+	const pending: Array<ReturnType<typeof Promise.withResolvers<Response>>> = [];
+	const options = {
+		sessionId,
+		apiKey: testApiKey(),
+		transport: "sse" as const,
+		fetch: Object.assign(
+			async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+				const completion = Promise.withResolvers<Response>();
+				const signal = init?.signal;
+				if (!signal) throw new Error("Missing request cancellation");
+				signal.addEventListener("abort", () => completion.reject(signal.reason), { once: true });
+				pending.push(completion);
+				if (pending.length === 2) started.resolve();
+				return completion.promise;
+			},
+			{ preconnect() {} },
+		),
+	};
+	const first = runtime.stream(model, { messages: [] }, options).result();
+	const second = runtime.stream(model, { messages: [] }, options).result();
+	const complete = () => new Response('data: {"type":"response.completed","response":{"status":"completed"}}\n\n');
+	try {
+		await started.promise;
+		pending[0]!.resolve(complete());
+		expect((await first).stopReason).toBe("stop");
+		runtime.shutdownSession({
+			sessionManager: {
+				getSessionId: () => sessionId,
+				getSessionFile: () => undefined,
+			},
+		});
+		expect((await second).stopReason).toBe("aborted");
+	} finally {
+		for (const request of pending) request.resolve(complete());
+		await Promise.all([first, second]);
+		runtime.shutdown();
+	}
 });

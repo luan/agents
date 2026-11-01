@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { createAssistantMessageEventStream, type Model } from "@earendil-works/pi-ai";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { createGrammarToolInputProperties } from "../src/constrained-sampling.ts";
+import { NonRetryableProviderError } from "../src/provider/errors.ts";
+import { isRetryableCodexStreamError } from "../src/provider/stream-events.ts";
 import { buildRequestBody } from "../src/provider/request-body.ts";
 import { createInitialAssistantMessage } from "../src/provider/types.ts";
 import { convertResponsesMessages } from "../src/responses/shared.ts";
@@ -135,6 +137,152 @@ test("native custom tool events become a Pi tool call", async () => {
 		arguments: { text: "hello" },
 	});
 	expect(output.stopReason).toBe("toolUse");
+});
+
+type ResponseEvent = Parameters<typeof processResponsesStream>[0] extends AsyncIterable<infer Event> ? Event : never;
+
+async function* responseEvents(events: readonly ResponseEvent[]): AsyncIterable<ResponseEvent> {
+	yield* events;
+}
+
+test.each([true, false])("final function arguments are authoritative (streamed: %j)", async (streamed) => {
+	const item = { type: "function_call", id: "fc_1", call_id: "call_1", name: "read_file", arguments: "" } as const;
+	const events: ResponseEvent[] = streamed
+		? [
+				{ type: "response.output_item.added", output_index: 0, item },
+				{ type: "response.function_call_arguments.delta", output_index: 0, delta: '{"path":"old"}' },
+			]
+		: [];
+	events.push({
+		type: "response.output_item.done",
+		output_index: 0,
+		item: { ...item, arguments: '{"path":"final","offset":7}' },
+	});
+	const output = createInitialAssistantMessage(model);
+	await processResponsesStream(responseEvents(events), output, createAssistantMessageEventStream(), model);
+	expect(output.content).toEqual([
+		{ type: "toolCall", id: "call_1|fc_1", name: "read_file", arguments: { path: "final", offset: 7 } },
+	]);
+});
+
+test.each(["null", "[]", "1", '"text"', '{"broken":'])(
+	"incomplete or non-object final arguments %s cannot become a tool call",
+	async (arguments_) => {
+		const item = { type: "function_call", id: "fc_1", call_id: "call_1", name: "read_file", arguments: "" } as const;
+		const output = createInitialAssistantMessage(model);
+		await expect(
+			processResponsesStream(
+				responseEvents([
+					{ type: "response.output_item.added", output_index: 0, item },
+					{ type: "response.function_call_arguments.delta", output_index: 0, delta: '{"path":"partial"}' },
+					{ type: "response.output_item.done", output_index: 0, item: { ...item, arguments: arguments_ } },
+				]),
+				output,
+				createAssistantMessageEventStream(),
+				model,
+			),
+		).rejects.toThrow("Invalid function call arguments");
+		expect(output.content).toEqual([]);
+	},
+);
+
+test.each([true, false])("completed output items keep their content indexes (added events: %j)", async (added) => {
+	type Item = Extract<ResponseEvent, { type: "response.output_item.added" | "response.output_item.done" }>["item"];
+	const items: Item[] = [
+		{ type: "reasoning", summary: [{ text: "thought" }] },
+		{
+			type: "message",
+			id: "msg_1",
+			content: [
+				{ type: "output_text", text: "answer" },
+				{ type: "refusal", refusal: "refusal" },
+			],
+		},
+		{ type: "function_call", id: "fc_1", call_id: "call_1", name: "function", arguments: '{"value":1}' },
+		{
+			type: "custom_tool_call",
+			id: "ctc_1",
+			call_id: "call_2",
+			name: "custom",
+			input: "custom input",
+			namespace: "tools",
+		},
+	];
+	const events: ResponseEvent[] = added
+		? items.map((item, output_index) => ({ type: "response.output_item.added", output_index, item }))
+		: [];
+	if (added)
+		events.push(
+			{ type: "response.reasoning_summary_text.delta", output_index: 0, summary_index: 0, delta: "thought" },
+			{ type: "response.output_text.delta", output_index: 1, content_index: 0, delta: "answer" },
+			{ type: "response.refusal.delta", output_index: 1, content_index: 1, delta: "refusal" },
+		);
+	for (let output_index = items.length - 1; output_index >= 0; output_index--) {
+		events.push({ type: "response.output_item.done", output_index, item: items[output_index]! });
+	}
+	const output = createInitialAssistantMessage(model);
+	const stream = createAssistantMessageEventStream();
+	await processResponsesStream(responseEvents(events), output, stream, model);
+	stream.end();
+	const starts: number[] = [];
+	const ends: number[] = [];
+	const deltas: string[] = [];
+	for await (const event of stream) {
+		if (event.type === "thinking_delta" || event.type === "text_delta") deltas.push(event.delta);
+		if (event.type === "thinking_start" || event.type === "text_start" || event.type === "toolcall_start")
+			starts.push(event.contentIndex);
+		if (event.type === "thinking_end" || event.type === "text_end" || event.type === "toolcall_end")
+			ends.push(event.contentIndex);
+	}
+	expect(deltas).toEqual(added ? ["thought", "answer", "refusal"] : []);
+	expect(starts).toEqual([0, 1, 2, 3]);
+	expect(ends).toEqual(added ? [3, 2, 1, 0] : [0, 1, 2, 3]);
+	const content = added ? output.content : [...output.content].reverse();
+	expect(content).toMatchObject([
+		{ type: "thinking", thinking: "thought" },
+		{ type: "text", text: "answerrefusal" },
+		{ type: "toolCall", arguments: { value: 1 } },
+		{ type: "toolCall", arguments: { input: "custom input" }, namespace: "tools" },
+	]);
+});
+
+test("stream failure removes only unfinished tool calls", async () => {
+	const output = createInitialAssistantMessage(model);
+	const stream = createAssistantMessageEventStream();
+	const source = responseEvents([
+		{
+			type: "response.output_item.added",
+			output_index: 0,
+			item: { type: "custom_tool_call", id: "ctc_1", call_id: "call_1", name: "unfinished" },
+		},
+		{
+			type: "response.output_item.done",
+			output_index: 1,
+			item: { type: "message", id: "msg_1", content: [{ type: "output_text", text: "kept" }] },
+		},
+		{
+			type: "response.output_item.done",
+			output_index: 2,
+			item: { type: "function_call", id: "fc_2", call_id: "call_2", name: "finished", arguments: "{}" },
+		},
+		{
+			type: "response.output_item.added",
+			output_index: 3,
+			item: { type: "function_call", id: "fc_3", call_id: "call_3", name: "invalid", arguments: "" },
+		},
+		{
+			type: "response.output_item.done",
+			output_index: 3,
+			item: { type: "function_call", id: "fc_3", call_id: "call_3", name: "invalid", arguments: "null" },
+		},
+	]);
+	const failure = processResponsesStream(source, output, stream, model);
+	await expect(failure).rejects.toBeInstanceOf(NonRetryableProviderError);
+	await failure.catch((error: Error) => expect(isRetryableCodexStreamError(error)).toBe(false));
+	expect(output.content).toMatchObject([
+		{ type: "text", text: "kept" },
+		{ type: "toolCall", name: "finished", arguments: {} },
+	]);
 });
 
 test("stored native custom tool calls replay without current grammar metadata", () => {

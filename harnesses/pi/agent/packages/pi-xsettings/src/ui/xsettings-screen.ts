@@ -640,7 +640,7 @@ export class XSettingsScreen extends ComponentStack {
 				candidate.kind === entry.kind && candidate.page.id === entry.page.id && candidate.section === entry.section,
 		);
 		this.sidebarFocused = !focusContent;
-		this.pageColumns.setSearchActive(false);
+		this.setSearchActive(false);
 		if (entry.kind === "section" && entry.fieldId) {
 			if (entry.page.id !== this.activePage) {
 				this.clearSearch();

@@ -73,6 +73,26 @@ class FakeClock implements MotionClock {
 }
 
 describe("MotionScheduler", () => {
+	test.each(["frame", "render"] as const)(
+		"disposing during a failing %s callback releases each mount once",
+		(phase) => {
+			const clock = new FakeClock();
+			const scheduler = new MotionScheduler(clock);
+			const fail = () => {
+				mount.dispose();
+				throw new Error("surface closed");
+			};
+			const mount = scheduler.mount(
+				{ requestRender: phase === "render" ? fail : () => {} },
+				{ cadenceMs: 40, onFrame: phase === "frame" ? fail : undefined },
+			);
+			clock.tick(40, 40);
+			expect(scheduler.activeMountCount).toBe(0);
+			expect(scheduler.activeTimerCount).toBe(0);
+			expect(clock.timers[0]?.stopped).toBe(true);
+		},
+	);
+
 	test.each(["render", "frame"] as const)("defers mounts replaced during a %s until the next tick", (phase) => {
 		const clock = new FakeClock();
 		const scheduler = new MotionScheduler(clock);

@@ -107,19 +107,14 @@ interface Session {
 	emittedOffset: number;
 	exitCode?: number;
 	observedExitCode?: number;
-	closed: boolean;
 	lastSeq: number;
-	version: number;
 	waiters: Set<() => void>;
 	decoders: Record<"stdout" | "stderr" | "pty", StringDecoder>;
 	normalizers: Record<"stdout" | "stderr" | "pty", OutputNormalizer>;
-	decodersFlushed: boolean;
 	nextEmptyPollYieldMs?: number;
 }
 
 interface CompletedSession {
-	command: string;
-	tty: boolean;
 	result: UnifiedExecResult;
 	snapshot: ExecProcessSnapshot;
 }
@@ -178,8 +173,14 @@ function shellArgs(command: string, login: boolean, shell: string): string[] {
 	return [login ? "-lc" : "-c", command];
 }
 
-function resultFor(session: Session, elapsedMs: number, maxOutputTokens?: number): UnifiedExecResult {
-	const output = takeOutput(session, maxOutputTokens);
+interface OutputWait {
+	tool: "exec_command" | "write_stdin";
+	idleMs: number;
+	hardLimitMs: number;
+	maxOutputTokens: number;
+}
+
+function resultFor(session: Session, elapsedMs: number, output: ReturnType<typeof peekOutput>): UnifiedExecResult {
 	return {
 		chunk_id: chunkId(),
 		wall_time_seconds: elapsedMs / 1000,
@@ -187,6 +188,9 @@ function resultFor(session: Session, elapsedMs: number, maxOutputTokens?: number
 		...(session.exitCode === undefined ? { session_id: session.id } : { exit_code: session.exitCode }),
 	};
 }
+
+// type-boundary: terminal-bridge JSON is validated by parseTerminalBridgeReadResponse before reducing output.
+type NativeReadResult = unknown;
 
 function abortError(tool: string): Error {
 	return new Error(`${tool} aborted`);
@@ -200,16 +204,7 @@ function raceAbort<T>(operation: Promise<T>, signal: AbortSignal | undefined, to
 			cleanup();
 			reject(abortError(tool));
 		};
-		operation.then(
-			(value) => {
-				cleanup();
-				resolvePromise(value);
-			},
-			(error: unknown) => {
-				cleanup();
-				reject(error);
-			},
-		);
+		operation.finally(cleanup).then(resolvePromise, reject);
 		if (signal.aborted) onAbort();
 		else signal.addEventListener("abort", onAbort, { once: true });
 	});
@@ -315,24 +310,18 @@ export function createExecSessionManager(
 		if (oldest !== undefined) commands.delete(oldest);
 	}
 
-	function rememberCompleted(session: Session, elapsedMs: number): void {
+	function rememberCompleted(session: Session): void {
 		const originalChars = outputEnd(session);
 		const output = outputTail(session, MAX_COMPLETED_OUTPUT_CHARS);
-		const result: UnifiedExecResult = {
-			chunk_id: chunkId(),
-			wall_time_seconds: elapsedMs / 1000,
-			...truncateOutput(output, MAX_COMPLETED_OUTPUT_CHARS / 4, originalChars),
-			exit_code: session.exitCode ?? 1,
-		};
+		const result = resultFor(
+			session,
+			(session.finishedAtMs ?? runtime.now()) - session.startedAtMs,
+			truncateOutput(output, MAX_COMPLETED_OUTPUT_CHARS / 4, originalChars),
+		);
 		completed.set(session.id, {
-			command: session.command,
-			tty: session.tty,
 			result,
 			snapshot: Object.freeze({
 				...activeSnapshot(session),
-				state: "exited",
-				stdinOpen: false,
-				exitCode: result.exit_code ?? 1,
 				output: result.output,
 				outputTruncated: result.output_truncated,
 			}),
@@ -351,15 +340,25 @@ export function createExecSessionManager(
 	}
 
 	function wake(session: Session): void {
-		session.version += 1;
 		for (const waiter of session.waiters) waiter();
 	}
 
+	function completeSession(session: Session, exitCode: number): void {
+		session.exitCode = exitCode;
+		session.finishedAtMs ??= runtime.now();
+		if (!stopped && sessions.get(session.id) === session) {
+			rememberCompleted(session);
+			sessions.delete(session.id);
+		}
+		wake(session);
+		emitProcesses();
+	}
+
 	async function pollLoop(session: Session): Promise<void> {
-		while (!stopped && !session.closed) {
+		while (!stopped && session.exitCode === undefined) {
 			let response: TerminalBridgeReadResponse;
 			try {
-				const result = await bridge.request<unknown>({
+				const result = await bridge.request<NativeReadResult>({
 					op: "read",
 					process_id: session.processId,
 					after_seq: session.lastSeq,
@@ -372,13 +371,11 @@ export function createExecSessionManager(
 				response = parsed;
 			} catch (error) {
 				appendBounded(session, `${error instanceof Error ? error.message : String(error)}\n`, maxSessionBufferChars);
-				session.exitCode = 1;
-				session.finishedAtMs ??= runtime.now();
-				session.closed = true;
-				wake(session);
-				emitProcesses();
+				await discardNativeProcess(session);
+				completeSession(session, 1);
 				return;
 			}
+			if (stopped) return;
 			for (const chunk of response.chunks) {
 				const text = session.decoders[chunk.stream].write(chunk.bytes);
 				appendBounded(
@@ -394,15 +391,11 @@ export function createExecSessionManager(
 				session.finishedAtMs ??= runtime.now();
 			}
 			if (response.closed && response.more !== true) {
-				session.closed = true;
-				session.exitCode = response.exitCode ?? session.observedExitCode ?? 1;
-				if (!session.decodersFlushed) {
-					session.decodersFlushed = true;
-					for (const stream of ["stdout", "stderr", "pty"] as const) {
-						const text = session.decoders[stream].end();
-						appendBounded(session, session.tty ? text : session.normalizers[stream].end(text), maxSessionBufferChars);
-						if (session.tty && text) emitPtyData(Object.freeze({ processId: session.id, data: text }));
-					}
+				let exitCode = response.exitCode ?? session.observedExitCode ?? 1;
+				for (const stream of ["stdout", "stderr", "pty"] as const) {
+					const text = session.decoders[stream].end();
+					appendBounded(session, session.tty ? text : session.normalizers[stream].end(text), maxSessionBufferChars);
+					if (session.tty && text) emitPtyData(Object.freeze({ processId: session.id, data: text }));
 				}
 				try {
 					const reaped = await bridge.request<{ removed: boolean }>({
@@ -416,8 +409,10 @@ export function createExecSessionManager(
 						`terminal_bridge reap failed: ${error instanceof Error ? error.message : String(error)}\n`,
 						maxSessionBufferChars,
 					);
-					session.exitCode = 1;
+					exitCode = 1;
 				}
+				completeSession(session, exitCode);
+				return;
 			}
 			if (response.chunks.length > 0 || response.exited || response.closed) {
 				wake(session);
@@ -428,13 +423,12 @@ export function createExecSessionManager(
 
 	function wait(
 		session: Session,
-		idleMs: number,
-		hardLimitMs: number,
+		options: OutputWait,
 		signal: AbortSignal | undefined,
-		baselineVersion: number,
 		onProgress?: (elapsedMs: number) => void,
 	): Promise<number> {
-		if (stopped || session.exitCode !== undefined || signal?.aborted) return Promise.resolve(0);
+		if (signal?.aborted) return Promise.reject(abortError(options.tool));
+		if (stopped || session.exitCode !== undefined) return Promise.resolve(0);
 		const started = runtime.now();
 		return new Promise((resolvePromise, reject) => {
 			let idleTimer: { dispose(): void } | undefined;
@@ -451,22 +445,53 @@ export function createExecSessionManager(
 			};
 			const resetIdle = () => {
 				idleTimer?.dispose();
-				idleTimer = runtime.schedule(idleMs, finish);
+				idleTimer = runtime.schedule(options.idleMs, finish);
 			};
 			const onWake = () => {
-				if (session.version !== baselineVersion) onProgress?.(runtime.now() - started);
+				onProgress?.(runtime.now() - started);
 				if (stopped || session.exitCode !== undefined) finish();
-				else if (session.version !== baselineVersion) resetIdle();
+				else resetIdle();
 			};
 			const onAbort = () => {
 				cleanup();
-				reject(abortError("exec_command"));
+				reject(abortError(options.tool));
 			};
-			idleTimer = runtime.schedule(idleMs, finish);
-			hardTimer = runtime.schedule(Math.max(idleMs, hardLimitMs), finish);
+			idleTimer = runtime.schedule(options.idleMs, finish);
+			hardTimer = runtime.schedule(Math.max(options.idleMs, options.hardLimitMs), finish);
 			session.waiters.add(onWake);
 			signal?.addEventListener("abort", onAbort, { once: true });
 		});
+	}
+
+	async function collectOutput(
+		session: Session,
+		options: OutputWait,
+		signal: AbortSignal | undefined,
+		onUpdate: ((result: UnifiedExecResult) => void) | undefined,
+	): Promise<UnifiedExecResult> {
+		const baseline = session.emittedOffset;
+		let publishedOutputEnd = baseline;
+		const publishProgress = (elapsedMs: number): void => {
+			const end = outputEnd(session);
+			if (end === publishedOutputEnd) return;
+			publishedOutputEnd = end;
+			publishUpdate(onUpdate, resultFor(session, elapsedMs, peekOutput(session, baseline, options.maxOutputTokens)));
+		};
+		const elapsed = await wait(session, options, signal, publishProgress);
+		if (stopped) throw new Error(`exec session manager shut down during ${options.tool}`);
+		// Include output that arrived before the waiter subscribed, including between tool calls.
+		publishProgress(elapsed);
+		return resultFor(session, elapsed, takeOutput(session, options.maxOutputTokens));
+	}
+
+	async function cancelSession(session: Session): Promise<void> {
+		sessions.delete(session.id);
+		emitProcesses();
+		await discardNativeProcess(session);
+	}
+
+	async function discardNativeProcess(session: Session): Promise<void> {
+		await bridge.request({ op: "discard", process_id: session.processId }).catch(() => undefined);
 	}
 
 	return {
@@ -492,9 +517,7 @@ export function createExecSessionManager(
 				bufferLength: 0,
 				bufferStartOffset: 0,
 				emittedOffset: 0,
-				closed: false,
 				lastSeq: 0,
-				version: 0,
 				waiters: new Set(),
 				decoders: {
 					stdout: new StringDecoder("utf8"),
@@ -506,7 +529,6 @@ export function createExecSessionManager(
 					stderr: new OutputNormalizer(),
 					pty: new OutputNormalizer(),
 				},
-				decodersFlushed: false,
 			};
 			sessions.set(id, session);
 			rememberCommand(id, input.cmd);
@@ -521,47 +543,24 @@ export function createExecSessionManager(
 					pipe_stdin: session.tty,
 					arg0: null,
 				});
-				if (signal?.aborted) {
-					await bridge.request({ op: "terminate", process_id: session.processId }).catch(() => undefined);
-					sessions.delete(session.id);
-					throw abortError("exec_command");
-				}
-			} catch (error) {
-				sessions.delete(session.id);
-				emitProcesses();
-				throw error;
-			}
-			emitProcesses();
-			void pollLoop(session);
-			try {
-				const idleMs = clamp(input.yield_time_ms, defaultExecYieldTimeMs, maxExecYieldTimeMs);
-				let publishedOutputEnd = session.emittedOffset;
-				const publishProgress = (progressMs: number): void => {
-					const currentOutputEnd = outputEnd(session);
-					if (currentOutputEnd === publishedOutputEnd) return;
-					publishedOutputEnd = currentOutputEnd;
-					const output = peekOutput(session, session.emittedOffset, input.max_output_tokens ?? defaultMaxOutputTokens);
-					publishUpdate(onUpdate, {
-						chunk_id: chunkId(),
-						wall_time_seconds: progressMs / 1_000,
-						...output,
-						...(session.exitCode === undefined ? { session_id: session.id } : { exit_code: session.exitCode }),
-					});
-				};
-				const elapsed = await wait(session, idleMs, maxExecYieldTimeMs, signal, session.version, publishProgress);
 				if (stopped) throw new Error("exec session manager shut down during exec_command");
-				// A fast process can finish before wait() subscribes. Publish its real output once before the final result.
-				publishProgress(elapsed);
-				const result = resultFor(session, elapsed, input.max_output_tokens ?? defaultMaxOutputTokens);
-				if (session.exitCode !== undefined) {
-					rememberCompleted(session, elapsed);
-					sessions.delete(session.id);
-					emitProcesses();
-				}
-				return result;
+				void pollLoop(session);
+				if (signal?.aborted) throw abortError("exec_command");
+				emitProcesses();
+				return await collectOutput(
+					session,
+					{
+						tool: "exec_command",
+						idleMs: clamp(input.yield_time_ms, defaultExecYieldTimeMs, maxExecYieldTimeMs),
+						hardLimitMs: maxExecYieldTimeMs,
+						maxOutputTokens: input.max_output_tokens ?? defaultMaxOutputTokens,
+					},
+					signal,
+					onUpdate,
+				);
 			} catch (error) {
-				if (signal?.aborted) {
-					await bridge.request({ op: "terminate", process_id: session.processId }).catch(() => undefined);
+				if (signal?.aborted) await cancelSession(session);
+				else {
 					sessions.delete(session.id);
 					emitProcesses();
 				}
@@ -582,62 +581,56 @@ export function createExecSessionManager(
 				}
 				return replayCompleted(completedSession, input.max_output_tokens ?? defaultMaxOutputTokens);
 			}
-			const baseline = outputEnd(session);
-			const chars = input.chars ?? "";
-			if (chars) {
-				if (!session.tty) throw new Error("stdin is closed for this session; rerun exec_command with tty=true");
-				const response = await raceAbort(
-					bridge.request<{ status: string }>({
-						op: "write",
-						process_id: session.processId,
-						chunk: chars,
-					}),
-					signal,
-					"write_stdin",
-				);
-				if (response.status !== "accepted") throw new Error(`stdin write was ${response.status}`);
-				session.nextEmptyPollYieldMs = undefined;
-			}
-			const requestedYieldMs = chars
-				? clamp(input.yield_time_ms, DEFAULT_WRITE_YIELD_MS, maxExecYieldTimeMs)
-				: Math.min(
-						maxEmptyWriteYieldTimeMs,
-						Math.max(minEmptyWriteYieldTimeMs, input.yield_time_ms ?? minEmptyWriteYieldTimeMs),
+			try {
+				const chars = input.chars ?? "";
+				if (chars) {
+					if (!session.tty) throw new Error("stdin is closed for this session; rerun exec_command with tty=true");
+					const response = await raceAbort(
+						bridge.request<{ status: string }>({
+							op: "write",
+							process_id: session.processId,
+							chunk: chars,
+						}),
+						signal,
+						"write_stdin",
 					);
-			const effectiveYieldMs = chars ? requestedYieldMs : Math.max(requestedYieldMs, session.nextEmptyPollYieldMs ?? 0);
-			const elapsed = await wait(session, effectiveYieldMs, effectiveYieldMs, signal, session.version, (progressMs) => {
-				const output = peekOutput(session, baseline, input.max_output_tokens ?? defaultMaxOutputTokens);
-				publishUpdate(onUpdate, {
-					chunk_id: chunkId(),
-					wall_time_seconds: progressMs / 1_000,
-					...output,
-					...(session.exitCode === undefined ? { session_id: session.id } : { exit_code: session.exitCode }),
-				});
-			});
-			if (!chars && session.exitCode === undefined) {
-				session.nextEmptyPollYieldMs = Math.min(maxEmptyWriteYieldTimeMs, effectiveYieldMs * 2);
+					if (response.status !== "accepted") throw new Error(`stdin write was ${response.status}`);
+					session.nextEmptyPollYieldMs = undefined;
+				}
+				const requestedYieldMs = chars
+					? clamp(input.yield_time_ms, DEFAULT_WRITE_YIELD_MS, maxExecYieldTimeMs)
+					: Math.min(
+							maxEmptyWriteYieldTimeMs,
+							Math.max(minEmptyWriteYieldTimeMs, input.yield_time_ms ?? minEmptyWriteYieldTimeMs),
+						);
+				const effectiveYieldMs = chars
+					? requestedYieldMs
+					: Math.max(requestedYieldMs, session.nextEmptyPollYieldMs ?? 0);
+				const result = await collectOutput(
+					session,
+					{
+						tool: "write_stdin",
+						idleMs: effectiveYieldMs,
+						hardLimitMs: effectiveYieldMs,
+						maxOutputTokens: input.max_output_tokens ?? defaultMaxOutputTokens,
+					},
+					signal,
+					onUpdate,
+				);
+				if (!chars && session.exitCode === undefined) {
+					session.nextEmptyPollYieldMs = Math.min(maxEmptyWriteYieldTimeMs, effectiveYieldMs * 2);
+				}
+				return result;
+			} catch (error) {
+				if (signal?.aborted) await cancelSession(session);
+				throw error;
 			}
-			const output = peekOutput(session, baseline, input.max_output_tokens ?? defaultMaxOutputTokens);
-			if (stopped) throw new Error("exec session manager shut down during write_stdin");
-			session.emittedOffset = outputEnd(session);
-			const result: UnifiedExecResult = {
-				chunk_id: chunkId(),
-				wall_time_seconds: elapsed / 1000,
-				...output,
-				...(session.exitCode === undefined ? { session_id: session.id } : { exit_code: session.exitCode }),
-			};
-			if (session.exitCode !== undefined) {
-				rememberCompleted(session, elapsed);
-				sessions.delete(session.id);
-				emitProcesses();
-			}
-			return result;
 		},
 		getSessionCommand(sessionId) {
-			return sessions.get(sessionId)?.command ?? completed.get(sessionId)?.command ?? commands.get(sessionId);
+			return sessions.get(sessionId)?.command ?? completed.get(sessionId)?.snapshot.command ?? commands.get(sessionId);
 		},
 		getSessionTty(sessionId) {
-			return sessions.get(sessionId)?.tty ?? completed.get(sessionId)?.tty;
+			return sessions.get(sessionId)?.tty ?? completed.get(sessionId)?.snapshot.tty;
 		},
 		listProcesses,
 		subscribeProcesses(listener) {

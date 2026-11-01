@@ -93,6 +93,8 @@ than 30 seconds, even for a command that keeps producing output.
 `session_id` is required. `chars` is optional:
 
 - Omit `chars`, or pass an empty string, to poll for output.
+- A poll includes output produced since the previous result, including output
+  that arrived between calls.
 - Input is only accepted by sessions started with `tty: true`; pipe sessions
   have no writable stdin.
 - A write waits 250 ms by default. An empty poll starts at 30 seconds and
@@ -105,9 +107,12 @@ than 30 seconds, even for a command that keeps producing output.
 
 Successful `write_stdin` calls are transcript-silent: their output stays
 model-visible and the live terminal state stays available in the Process Hub.
-Failures still render. Aborting a call or shutting down the extension
-terminates the command's process group and clears all sessions; the bridge
-process is reaped only after its final output has been read.
+Failures still render. Aborting a call terminates that command's process group
+and removes its session. Shutting down the extension terminates all sessions.
+An unreadable or malformed bridge response fails the session and discards its
+native process and pending output.
+Successful completion is reported only after final output has been read and
+the native bridge has reaped the process.
 
 ## Process Hub
 

@@ -109,9 +109,9 @@ export function createPtyHost({ bridge, createProcessId, environment }: PtyHostD
 	};
 
 	const poll = async (processId: string, process: HostedProcess): Promise<void> => {
-		while (!stopped && process.running && processes.get(processId) === process) {
-			let response: TerminalBridgeReadResponse;
-			try {
+		let release: "reap" | "discard" = "discard";
+		try {
+			while (!stopped && process.running && processes.get(processId) === process) {
 				const result = await bridge.request<unknown>({
 					op: "read",
 					process_id: processId,
@@ -121,23 +121,21 @@ export function createPtyHost({ bridge, createProcessId, environment }: PtyHostD
 					// recovers a lost wake without generating steady idle bridge traffic.
 					wait_ms: PTY_READ_IDLE_TIMEOUT_MS,
 				});
-				const parsed = parseTerminalBridgeReadResponse(result, process.nextSeq);
-				if (!parsed) throw new Error("terminal bridge emitted an invalid read result");
-				response = parsed;
-			} catch {
-				// A later bridge failure must not discard bytes accepted by an earlier read.
-				await process.terminal.drain();
-				process.running = false;
-				if (!stopped) emit(process);
-				return;
+				const response = parseTerminalBridgeReadResponse(result, process.nextSeq);
+				if (!response) throw new Error("terminal bridge emitted an invalid read result");
+				process.nextSeq = response.nextSeq;
+				for (const chunk of response.chunks) process.terminal.write(chunk.bytes);
+				if (closesProcess(response)) {
+					release = response.failure == null ? "reap" : "discard";
+					break;
+				}
 			}
-			process.nextSeq = response.nextSeq;
-			for (const chunk of response.chunks) {
-				process.terminal.write(chunk.bytes);
-			}
-			if (process.running && closesProcess(response)) {
-				// Do not expose terminal completion until every accepted byte is visible
-				// to consumers; otherwise onExit can dispose a pane with a queued tail.
+		} catch {
+			// A failed read abandons native output, but preserves bytes already projected.
+		} finally {
+			if (!stopped && processes.get(processId) === process) {
+				await bridge.request({ op: release, process_id: processId }).catch(() => undefined);
+				// Publish completion only after the accepted tail is visible to onExit.
 				await process.terminal.drain();
 				process.running = false;
 				if (!stopped && processes.get(processId) === process) emit(process);
@@ -184,6 +182,7 @@ export function createPtyHost({ bridge, createProcessId, environment }: PtyHostD
 				hosted.terminal.dispose();
 				throw error;
 			}
+			if (stopped) throw new Error("PTY host is shut down");
 			hosted.polling = poll(processId, hosted);
 			return processId;
 		},
@@ -222,7 +221,7 @@ export function createPtyHost({ bridge, createProcessId, environment }: PtyHostD
 				// observe closure before the native process entry is reaped.
 				if (terminated) await process.polling;
 				process.running = false;
-				await bridge.request({ op: "reap", process_id: processId }).catch(() => undefined);
+				if (!terminated) await bridge.request({ op: "discard", process_id: processId }).catch(() => undefined);
 				if (processes.get(processId) === process) {
 					processes.delete(processId);
 					process.terminal.dispose();

@@ -335,6 +335,38 @@ describe("split-pane bridge", () => {
 		removePane();
 	});
 
+	test("leaving the divider cancels a drag without committing a later release", () => {
+		const panes = registry();
+		const tui = new FullscreenTuiFixture(fill("M"));
+		const committedSizes: number[] = [];
+		const removePane = panes.mount({
+			id: "cancel-resize",
+			position: "right",
+			component: () => fill("P"),
+			size: 20,
+			minMainSize: 40,
+			gap: 1,
+			onResize: (size) => committedSizes.push(size),
+		});
+		const removeBridge = installSplitPaneBridge(tui as TuiBoundary as TUI, () => theme, panes, mouseRegistry());
+		try {
+			const handle = divider(tui.layoutRoot);
+			handle.onMouse(mouse("press", 59, 0));
+			handle.onMouse(mouse("drag", 49, 0));
+			handle.onMouse(mouse("leave", 49));
+			expect(handle.onMouse(mouse("drag", 44, 0))).toBe(false);
+			expect(handle.onMouse(mouse("release", 44, 0))).toBe(false);
+			expect(committedSizes).toEqual([]);
+			expect(render(tui.layoutRoot, 80)[0]).toBe(`${"M".repeat(48)} │${"P".repeat(30)}`);
+			handle.onMouse(mouse("press", 49, 0));
+			handle.onMouse(mouse("release", 44, 0));
+			expect(committedSizes).toEqual([35]);
+		} finally {
+			removeBridge();
+			removePane();
+		}
+	});
+
 	test("restores each pane's preferred width after temporary replacement", () => {
 		const panes = registry();
 		const tui = new FullscreenTuiFixture(fill("M"));

@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import type * as NodeZlib from "node:zlib";
 import type { StreamEventShape } from "./types.ts";
 
@@ -20,30 +21,13 @@ export function compressRequestBodyZstd(bodyJson: string): Uint8Array | null {
 	}
 }
 
-export function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal?.aborted) {
-			reject(new Error("Request was aborted"));
-			return;
-		}
-
-		let settled = false;
-		const onAbort = () => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timeout);
-			signal?.removeEventListener("abort", onAbort);
-			reject(new Error("Request was aborted"));
-		};
-		const timeout = setTimeout(() => {
-			if (settled) return;
-			settled = true;
-			signal?.removeEventListener("abort", onAbort);
-			resolve();
-		}, ms);
-		signal?.addEventListener("abort", onAbort, { once: true });
-		if (signal?.aborted) onAbort();
-	});
+export async function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	try {
+		await delay(ms, undefined, { signal });
+	} catch (error) {
+		if (signal?.aborted) throw new Error("Request was aborted");
+		throw error;
+	}
 }
 
 export function normalizeTimeoutMs(value: number | undefined, optionName: string): number | undefined {
@@ -52,30 +36,6 @@ export function normalizeTimeoutMs(value: number | undefined, optionName: string
 		throw new Error(`Invalid ${optionName}: ${String(value)}`);
 	}
 	return Math.floor(value);
-}
-
-export function combineAbortSignals(signals: Array<AbortSignal | undefined>): {
-	signal: AbortSignal;
-	cleanup: () => void;
-} {
-	const controller = new AbortController();
-	const listeners: Array<{ signal: AbortSignal; listener: () => void }> = [];
-	for (const signal of signals) {
-		if (!signal) continue;
-		if (signal.aborted) {
-			controller.abort(signal.reason);
-			break;
-		}
-		const listener = () => controller.abort(signal.reason);
-		signal.addEventListener("abort", listener);
-		listeners.push({ signal, listener });
-	}
-	return {
-		signal: controller.signal,
-		cleanup: () => {
-			for (const { signal, listener } of listeners) signal.removeEventListener("abort", listener);
-		},
-	};
 }
 
 export function createSSEHeaderTimeout(timeoutMs: number): {
@@ -135,14 +95,14 @@ export async function* parseSSE(
 			if (signal?.aborted) {
 				throw new Error("Request was aborted");
 			}
-			if (done) break;
-
-			buffer += decoder.decode(value, { stream: true });
-			const trailingCarriageReturn = buffer.endsWith("\r");
+			buffer += decoder.decode(value, { stream: !done });
+			// At EOF a final CR is a complete line ending, not the start of a split CRLF.
+			const trailingCarriageReturn = !done && buffer.endsWith("\r");
 			const complete = trailingCarriageReturn ? buffer.slice(0, -1) : buffer;
 			buffer = complete.replace(/\r\n/g, "\n").replace(/\r/g, "\n") + (trailingCarriageReturn ? "\r" : "");
 			let idx = buffer.indexOf("\n\n");
 			while (idx !== -1) {
+				if (signal?.aborted) throw new Error("Request was aborted");
 				const chunk = buffer.slice(0, idx);
 				buffer = buffer.slice(idx + 2);
 				const dataLines = chunk
@@ -161,6 +121,7 @@ export async function* parseSSE(
 				}
 				idx = buffer.indexOf("\n\n");
 			}
+			if (done) break;
 		}
 	} finally {
 		signal?.removeEventListener("abort", onAbort);

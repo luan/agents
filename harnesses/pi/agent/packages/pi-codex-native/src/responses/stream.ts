@@ -1,7 +1,9 @@
 import { localFunctionName } from "./tool-names.ts";
+import { parse as partialParse } from "partial-json";
 import { calculateCost, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import type { AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { appendGrammarToolInputJsonDelta, type GrammarToolInputJsonBuffer } from "../constrained-sampling.ts";
+import { NonRetryableProviderError } from "../provider/errors.ts";
 import { encodeTextSignatureV1 } from "./signatures.ts";
 import { sanitizeWebSearchCallItem, type WebSearchCallBlock } from "./native-items.ts";
 import type { OpenAIResponsesStreamOptions } from "./shared.ts";
@@ -83,21 +85,23 @@ type ResponseStreamEvent =
 
 type InternalAssistantContent = AssistantMessage["content"][number] | WebSearchCallBlock;
 
-// type-boundary: partial-json returns an untyped parse result; parseStreamingJson constrains it to a JSON object.
-type UntrustedPartialJson = unknown;
-type PartialJsonParser = (value: string) => UntrustedPartialJson;
-
-function parseStreamingJson(partialJson: string, partialParse: PartialJsonParser): JsonObject {
-	if (!partialJson || partialJson.trim() === "") return {};
+function parseStreamingJson(partialJson: string): JsonObject {
 	try {
-		return JSON.parse(partialJson) as JsonObject;
+		const parsed = partialParse(partialJson) as JsonValue;
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
 	} catch {
-		try {
-			return (partialParse(partialJson) ?? {}) as JsonObject;
-		} catch {
-			return {};
-		}
+		return {};
 	}
+}
+
+function parseFinalArguments(argumentsJson: string): JsonObject {
+	try {
+		const parsed: JsonValue = JSON.parse(argumentsJson);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+	} catch {
+		// A completed call must not execute a repaired partial argument object.
+	}
+	throw new NonRetryableProviderError("Invalid function call arguments: expected a complete JSON object");
 }
 
 export async function processResponsesStream<TApi extends Api>(
@@ -107,14 +111,10 @@ export async function processResponsesStream<TApi extends Api>(
 	model: Model<TApi>,
 	options?: OpenAIResponsesStreamOptions,
 ): Promise<void> {
-	const { parse: partialParse } = await import("partial-json");
 	const blocks = output.content;
-	const blockIndex = () => blocks.length - 1;
 	type ThinkingBlock = Extract<AssistantMessage["content"][number], { type: "thinking" }>;
 	type TextBlock = Extract<AssistantMessage["content"][number], { type: "text" }>;
-	type ToolCallBlock = Extract<AssistantMessage["content"][number], { type: "toolCall" }> & {
-		partialJson?: string | undefined;
-	};
+	type ToolCallBlock = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
 
 	type ReasoningState = {
 		kind: "reasoning";
@@ -132,6 +132,7 @@ export async function processResponsesStream<TApi extends Api>(
 		kind: "function_call";
 		blockIndex: number;
 		block: ToolCallBlock;
+		partialJson: string;
 	};
 	type CustomToolCallState = {
 		kind: "custom_tool_call";
@@ -151,20 +152,54 @@ export async function processResponsesStream<TApi extends Api>(
 		return delta;
 	};
 
-	const renderReasoningSummary = (summaryParts: Map<number, { text: string }>): string =>
-		Array.from(summaryParts.entries())
-			.sort(([a], [b]) => a - b)
-			.map(([, part]) => part.text)
-			.join("\n\n");
-
-	const renderMessageText = (parts: Map<number, { type: "output_text" | "refusal"; text: string }>): string =>
+	const renderParts = (parts: ReadonlyMap<number, { text: string }>, separator: string): string =>
 		Array.from(parts.entries())
 			.sort(([a], [b]) => a - b)
 			.map(([, part]) => part.text)
-			.join("");
+			.join(separator);
+
+	const startOutputItem = (outputIndex: number, item: ResponseOutputItem): void => {
+		let state: OutputState;
+		const blockIndex = blocks.length;
+		if (item.type === "reasoning") {
+			state = { kind: item.type, blockIndex, block: { type: "thinking", thinking: "" }, summaryParts: new Map() };
+		} else if (item.type === "message") {
+			state = { kind: item.type, blockIndex, block: { type: "text", text: "" }, parts: new Map() };
+		} else if (item.type === "function_call" || item.type === "custom_tool_call") {
+			const block: ToolCallBlock = {
+				type: "toolCall",
+				id: `${item.call_id}|${item.id ?? ""}`,
+				name: item.type === "function_call" ? localFunctionName(item.name, item.namespace) : item.name,
+				arguments: {},
+				...(item.namespace !== undefined ? { namespace: item.namespace } : {}),
+			};
+			if (item.type === "function_call") {
+				state = { kind: item.type, blockIndex, block, partialJson: item.arguments || "" };
+			} else {
+				const property = options?.grammarToolInputProperties?.get(item.name) ?? "input";
+				const input = item.input ?? "";
+				block.arguments = { [property]: input };
+				state = {
+					kind: item.type,
+					blockIndex,
+					block,
+					input,
+					property,
+					jsonBuffer: { input: "", started: false, closed: false },
+				};
+			}
+		} else return;
+		blocks.push(state.block);
+		outputStates.set(outputIndex, state);
+		stream.push({
+			type: state.kind === "reasoning" ? "thinking_start" : state.kind === "message" ? "text_start" : "toolcall_start",
+			contentIndex: blockIndex,
+			partial: output,
+		});
+	};
 
 	const emitAppendedDelta = (
-		eventType: "thinking_delta" | "text_delta",
+		eventType: "thinking_delta" | "text_delta" | "toolcall_delta",
 		contentIndex: number,
 		previous: string,
 		next: string,
@@ -190,19 +225,14 @@ export async function processResponsesStream<TApi extends Api>(
 	})();
 
 	for await (const event of cleanedStream) {
-		if (event.type === "response.custom_tool_call_input.delta") {
+		if (
+			event.type === "response.custom_tool_call_input.delta" ||
+			event.type === "response.custom_tool_call_input.done"
+		) {
 			const state = outputStates.get(event.output_index);
 			if (state?.kind === "custom_tool_call") {
-				const delta = appendCustomInput(state, state.input + event.delta, false);
-				if (delta !== undefined)
-					stream.push({ type: "toolcall_delta", contentIndex: state.blockIndex, delta, partial: output });
-			}
-			continue;
-		}
-		if (event.type === "response.custom_tool_call_input.done") {
-			const state = outputStates.get(event.output_index);
-			if (state?.kind === "custom_tool_call") {
-				const delta = appendCustomInput(state, event.input, true);
+				const done = event.type === "response.custom_tool_call_input.done";
+				const delta = appendCustomInput(state, done ? event.input : state.input + event.delta, done);
 				if (delta !== undefined)
 					stream.push({ type: "toolcall_delta", contentIndex: state.blockIndex, delta, partial: output });
 			}
@@ -211,66 +241,7 @@ export async function processResponsesStream<TApi extends Api>(
 		if (event.type === "response.created") {
 			output.responseId = event.response.id;
 		} else if (event.type === "response.output_item.added") {
-			const item = event.item;
-			if (item.type === "custom_tool_call") {
-				const customItem = item;
-				const input = customItem.input ?? "";
-				const property = options?.grammarToolInputProperties?.get(customItem.name) ?? "input";
-				const currentBlock: ToolCallBlock = {
-					type: "toolCall",
-					id: `${customItem.call_id}|${customItem.id ?? ""}`,
-					name: customItem.name,
-					arguments: { [property]: input },
-					...(customItem.namespace !== undefined ? { namespace: customItem.namespace } : {}),
-				};
-				output.content.push(currentBlock);
-				outputStates.set(event.output_index, {
-					kind: "custom_tool_call",
-					blockIndex: blockIndex(),
-					block: currentBlock,
-					input,
-					property,
-					jsonBuffer: { input: "", started: false, closed: false },
-				});
-				stream.push({ type: "toolcall_start", contentIndex: blockIndex(), partial: output });
-			} else if (item.type === "reasoning") {
-				const currentBlock: ThinkingBlock = { type: "thinking", thinking: "" };
-				output.content.push(currentBlock);
-				outputStates.set(event.output_index, {
-					kind: "reasoning",
-					blockIndex: blockIndex(),
-					block: currentBlock,
-					summaryParts: new Map(),
-				});
-				stream.push({ type: "thinking_start", contentIndex: blockIndex(), partial: output });
-			} else if (item.type === "message") {
-				const currentBlock: TextBlock = { type: "text", text: "" };
-				output.content.push(currentBlock);
-				outputStates.set(event.output_index, {
-					kind: "message",
-					blockIndex: blockIndex(),
-					block: currentBlock,
-					parts: new Map(),
-				});
-				stream.push({ type: "text_start", contentIndex: blockIndex(), partial: output });
-			} else if (item.type === "function_call") {
-				const namespace = item.namespace;
-				const currentBlock: ToolCallBlock = {
-					type: "toolCall",
-					id: `${item.call_id}|${item.id}`,
-					name: localFunctionName(item.name, item.namespace),
-					arguments: {},
-					...(namespace !== undefined ? { namespace } : {}),
-					partialJson: item.arguments || "",
-				};
-				output.content.push(currentBlock);
-				outputStates.set(event.output_index, {
-					kind: "function_call",
-					blockIndex: blockIndex(),
-					block: currentBlock,
-				});
-				stream.push({ type: "toolcall_start", contentIndex: blockIndex(), partial: output });
-			}
+			startOutputItem(event.output_index, event.item);
 		} else if (event.type === "response.reasoning_summary_part.added") {
 			const state = outputStates.get(event.output_index);
 			if (state?.kind === "reasoning") {
@@ -283,7 +254,7 @@ export async function processResponsesStream<TApi extends Api>(
 				summaryPart.text += event.delta;
 				state.summaryParts.set(event.summary_index, summaryPart);
 				const previousThinking = state.block.thinking;
-				const nextThinking = renderReasoningSummary(state.summaryParts);
+				const nextThinking = renderParts(state.summaryParts, "\n\n");
 				state.block.thinking = nextThinking;
 				emitAppendedDelta("thinking_delta", state.blockIndex, previousThinking, nextThinking);
 			}
@@ -291,7 +262,7 @@ export async function processResponsesStream<TApi extends Api>(
 			const state = outputStates.get(event.output_index);
 			if (state?.kind === "reasoning") {
 				state.summaryParts.set(event.summary_index, { text: event.part.text });
-				state.block.thinking = renderReasoningSummary(state.summaryParts);
+				state.block.thinking = renderParts(state.summaryParts, "\n\n");
 			}
 		} else if (event.type === "response.content_part.added") {
 			const state = outputStates.get(event.output_index);
@@ -301,107 +272,52 @@ export async function processResponsesStream<TApi extends Api>(
 					text: event.part.type === "output_text" ? event.part.text : event.part.refusal,
 				});
 			}
-		} else if (event.type === "response.output_text.delta") {
+		} else if (event.type === "response.output_text.delta" || event.type === "response.refusal.delta") {
 			const state = outputStates.get(event.output_index);
 			if (state?.kind === "message") {
-				const messagePart = state.parts.get(event.content_index) ?? { type: "output_text" as const, text: "" };
-				if (messagePart.type === "output_text") {
-					messagePart.text += event.delta;
-					state.parts.set(event.content_index, messagePart);
-					const previousText = state.block.text;
-					const nextText = renderMessageText(state.parts);
-					state.block.text = nextText;
-					emitAppendedDelta("text_delta", state.blockIndex, previousText, nextText);
-				}
-			}
-		} else if (event.type === "response.refusal.delta") {
-			const state = outputStates.get(event.output_index);
-			if (state?.kind === "message") {
-				const messagePart = state.parts.get(event.content_index) ?? { type: "refusal" as const, text: "" };
-				if (messagePart.type === "refusal") {
-					messagePart.text += event.delta;
-					state.parts.set(event.content_index, messagePart);
-					const previousText = state.block.text;
-					const nextText = renderMessageText(state.parts);
-					state.block.text = nextText;
-					emitAppendedDelta("text_delta", state.blockIndex, previousText, nextText);
+				const type = event.type === "response.output_text.delta" ? "output_text" : "refusal";
+				const part = state.parts.get(event.content_index) ?? { type, text: "" };
+				if (part.type === type) {
+					part.text += event.delta;
+					state.parts.set(event.content_index, part);
+					const previous = state.block.text;
+					state.block.text = renderParts(state.parts, "");
+					emitAppendedDelta("text_delta", state.blockIndex, previous, state.block.text);
 				}
 			}
 		} else if (event.type === "response.function_call_arguments.delta") {
 			const state = outputStates.get(event.output_index);
 			if (state?.kind === "function_call") {
-				state.block.partialJson = (state.block.partialJson ?? "") + event.delta;
-				state.block.arguments = parseStreamingJson(state.block.partialJson ?? "", partialParse);
+				state.partialJson = state.partialJson + event.delta;
+				state.block.arguments = parseStreamingJson(state.partialJson);
 				stream.push({ type: "toolcall_delta", contentIndex: state.blockIndex, delta: event.delta, partial: output });
 			}
 		} else if (event.type === "response.function_call_arguments.done") {
 			const state = outputStates.get(event.output_index);
 			if (state?.kind === "function_call") {
-				const previousPartialJson = state.block.partialJson ?? "";
-				state.block.partialJson = event.arguments;
-				state.block.arguments = parseStreamingJson(state.block.partialJson ?? "", partialParse);
-				if (event.arguments.startsWith(previousPartialJson)) {
-					const delta = event.arguments.slice(previousPartialJson.length);
-					if (delta.length > 0) {
-						stream.push({ type: "toolcall_delta", contentIndex: state.blockIndex, delta, partial: output });
-					}
-				}
+				const previousPartialJson = state.partialJson;
+				state.partialJson = event.arguments;
+				state.block.arguments = parseStreamingJson(state.partialJson);
+				emitAppendedDelta("toolcall_delta", state.blockIndex, previousPartialJson, event.arguments);
 			}
 		} else if (event.type === "response.output_item.done") {
 			const item = event.item;
-			const customItem = item.type === "custom_tool_call" ? item : undefined;
-			const customState = customItem ? outputStates.get(event.output_index) : undefined;
-			const customInput = customItem
-				? (customItem.input ?? (customState?.kind === "custom_tool_call" ? customState.input : ""))
-				: undefined;
-			options?.onOutputItemDone?.(customItem ? { ...customItem, input: customInput } : item);
-			if (customItem) {
-				const state = customState;
-				if (state?.kind === "custom_tool_call") {
-					const delta = appendCustomInput(state, customInput ?? "", true);
+			const previousState = outputStates.get(event.output_index);
+			if (previousState?.kind !== item.type) startOutputItem(event.output_index, item);
+			const state = outputStates.get(event.output_index);
+			if (item.type === "custom_tool_call" && state?.kind === "custom_tool_call") {
+				const input = item.input ?? state.input;
+				if (previousState?.kind === "custom_tool_call") {
+					const delta = appendCustomInput(state, input, true);
 					if (delta !== undefined)
-						stream.push({
-							type: "toolcall_delta",
-							contentIndex: state.blockIndex,
-							delta,
-							partial: output,
-						});
+						stream.push({ type: "toolcall_delta", contentIndex: state.blockIndex, delta, partial: output });
 				}
-				const property =
-					state?.kind === "custom_tool_call"
-						? state.property
-						: (options?.grammarToolInputProperties?.get(customItem.name) ?? "input");
-				const toolCall: ToolCallBlock =
-					state?.kind === "custom_tool_call"
-						? {
-								...state.block,
-								arguments: { [property]: customInput ?? "" },
-								...(customItem.namespace !== undefined ? { namespace: customItem.namespace } : {}),
-							}
-						: {
-								type: "toolCall",
-								id: `${customItem.call_id}|${customItem.id ?? ""}`,
-								name: customItem.name,
-								arguments: { [property]: customInput ?? "" },
-								...(customItem.namespace !== undefined ? { namespace: customItem.namespace } : {}),
-							};
-				if (state?.kind !== "custom_tool_call") {
-					output.content.push(toolCall);
-					stream.push({ type: "toolcall_start", contentIndex: blockIndex(), partial: output });
-				} else output.content[state.blockIndex] = toolCall;
-				const toolCallIndex = state?.kind === "custom_tool_call" ? state.blockIndex : blockIndex();
-				stream.push({ type: "toolcall_end", contentIndex: toolCallIndex, toolCall, partial: output });
-				outputStates.delete(event.output_index);
-			} else if (item.type === "reasoning") {
-				let state = outputStates.get(event.output_index);
-				if (!state || state.kind !== "reasoning") {
-					const currentBlock: ThinkingBlock = { type: "thinking", thinking: "" };
-					output.content.push(currentBlock);
-					state = { kind: "reasoning", blockIndex: blockIndex(), block: currentBlock, summaryParts: new Map() };
-					outputStates.set(event.output_index, state);
-					stream.push({ type: "thinking_start", contentIndex: state.blockIndex, partial: output });
-				}
-				state.block.thinking = item.summary?.map((summary: { text?: string }) => summary.text ?? "").join("\n\n") || "";
+				state.block.arguments = { [state.property]: input };
+				if (item.namespace !== undefined) state.block.namespace = item.namespace;
+				stream.push({ type: "toolcall_end", contentIndex: state.blockIndex, toolCall: state.block, partial: output });
+				options?.onOutputItemDone?.({ ...item, input });
+			} else if (item.type === "reasoning" && state?.kind === "reasoning") {
+				state.block.thinking = item.summary?.map((summary) => summary.text ?? "").join("\n\n") ?? "";
 				state.block.thinkingSignature = JSON.stringify(item);
 				stream.push({
 					type: "thinking_end",
@@ -409,71 +325,29 @@ export async function processResponsesStream<TApi extends Api>(
 					content: state.block.thinking,
 					partial: output,
 				});
-				outputStates.delete(event.output_index);
-			} else if (item.type === "message") {
-				let state = outputStates.get(event.output_index);
-				if (!state || state.kind !== "message") {
-					const currentBlock: TextBlock = { type: "text", text: "" };
-					output.content.push(currentBlock);
-					state = { kind: "message", blockIndex: blockIndex(), block: currentBlock, parts: new Map() };
-					outputStates.set(event.output_index, state);
-					stream.push({ type: "text_start", contentIndex: state.blockIndex, partial: output });
-				}
+			} else if (item.type === "message" && state?.kind === "message") {
 				state.block.text = item.content
-					.map((content: { type?: string; text?: string; refusal?: string }) =>
-						content.type === "output_text" ? (content.text ?? "") : (content.refusal ?? ""),
-					)
+					.map((content) => (content.type === "output_text" ? (content.text ?? "") : (content.refusal ?? "")))
 					.join("");
 				state.block.textSignature = encodeTextSignatureV1(item.id, item.phase ?? undefined);
 				stream.push({ type: "text_end", contentIndex: state.blockIndex, content: state.block.text, partial: output });
-				outputStates.delete(event.output_index);
-			} else if (item.type === "function_call") {
-				const state = outputStates.get(event.output_index);
-				const namespace = item.namespace;
-				const args =
-					state?.kind === "function_call" && state.block.partialJson
-						? parseStreamingJson(state.block.partialJson, partialParse)
-						: parseStreamingJson(item.arguments || "{}", partialParse);
-				let toolCall: ToolCallBlock;
-				if (state?.kind === "function_call") {
-					state.block.arguments = args;
-					if (namespace !== undefined) {
-						state.block.namespace = namespace;
-						state.block.name = localFunctionName(item.name, namespace);
-					}
-					delete state.block.partialJson;
-					toolCall = state.block;
-				} else {
-					toolCall = {
-						type: "toolCall",
-						id: `${item.call_id}|${item.id}`,
-						name: localFunctionName(item.name, item.namespace),
-						arguments: args,
-						...(namespace !== undefined ? { namespace } : {}),
-					};
-					output.content.push(toolCall);
-					stream.push({ type: "toolcall_start", contentIndex: blockIndex(), partial: output });
-				}
-				const toolCallIndex = state?.kind === "function_call" ? state.blockIndex : blockIndex();
-				stream.push({ type: "toolcall_end", contentIndex: toolCallIndex, toolCall, partial: output });
-				outputStates.delete(event.output_index);
+			} else if (item.type === "function_call" && state?.kind === "function_call") {
+				state.block.arguments = parseFinalArguments(item.arguments);
+				state.block.name = localFunctionName(item.name, item.namespace);
+				if (item.namespace !== undefined) state.block.namespace = item.namespace;
+				stream.push({ type: "toolcall_end", contentIndex: state.blockIndex, toolCall: state.block, partial: output });
 			} else if (item.type === "web_search_call") {
 				const webSearchCall = sanitizeWebSearchCallItem(item);
-				if (webSearchCall) {
-					(output.content as InternalAssistantContent[]).push({
-						type: "web_search_call",
-						item: webSearchCall,
-					});
-				}
-				outputStates.delete(event.output_index);
+				if (webSearchCall)
+					(output.content as InternalAssistantContent[]).push({ type: "web_search_call", item: webSearchCall });
 			}
+			if (item.type !== "custom_tool_call") options?.onOutputItemDone?.(item);
+			outputStates.delete(event.output_index);
 		} else if (event.type === "response.completed" || event.type === "response.incomplete") {
 			const response = event.response;
 			if (response?.id) output.responseId = response.id;
 			if (response?.usage) {
-				const inputDetails = response.usage.input_tokens_details as
-					| { cached_tokens?: number; cache_write_tokens?: number }
-					| undefined;
+				const inputDetails = response.usage.input_tokens_details;
 				const cachedTokens = inputDetails?.cached_tokens || 0;
 				const cacheWriteTokens = inputDetails?.cache_write_tokens || 0;
 				output.usage = {
@@ -508,9 +382,7 @@ export async function processResponsesStream<TApi extends Api>(
 			throw new Error(details || "Unknown error");
 		} else if (event.type === "response.failed") {
 			const error = event.response?.error;
-			const details = (
-				event.response as { incomplete_details?: { reason?: string | undefined } | undefined } | undefined
-			)?.incomplete_details;
+			const details = event.response?.incomplete_details;
 			const msg = error
 				? `${error.code || "unknown"}: ${error.message || "no message"}`
 				: details?.reason

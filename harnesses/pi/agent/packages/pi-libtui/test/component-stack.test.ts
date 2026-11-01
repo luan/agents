@@ -169,6 +169,12 @@ describe("ComponentStack", () => {
 		expect(first.events.map((event) => event.type)).toEqual(["enter", "move", "leave", "press", "release"]);
 		expect(second.events.map((event) => event.type)).toEqual(["enter", "move", "leave"]);
 		expect(first.events.at(-1)).toMatchObject({ row: 9 });
+
+		stack.onMouse(mouseEvent(0));
+		stack.onMouse({ ...mouseEvent(0), type: "leave" });
+		stack.onMouse({ ...mouseEvent(1), type: "release" });
+		expect(first.events.at(-1)?.type).toBe("leave");
+		expect(second.events.at(-1)).toMatchObject({ type: "release", row: 0 });
 	});
 
 	test("preserves a handled hover when its redraw invalidates nested geometry", () => {

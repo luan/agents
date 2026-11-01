@@ -1,3 +1,4 @@
+import { toUSVString } from "node:util";
 import { terminalSequenceEnd, terminalSequenceStart } from "./content/terminal-text.ts";
 
 const ANSI_RESET = "\x1b[0m";
@@ -53,19 +54,9 @@ export class BoundedStreamBuffer {
 	private exactBytes = 0;
 	private truncated = false;
 	private headValue = "";
-	private tailValue = "";
-	private tailPending = "";
-	private tailPendingBytes = 0;
-	private tailStart = 0;
-	private tailValueBytes = 0;
-	private tailAnsiPending: AnsiPending = { parser: "", characters: 0, bytes: 0 };
-	private partialValue = "";
-	private partialPending = "";
-	private partialPendingBytes = 0;
-	private partialStart = 0;
-	private partialBytes = 0;
+	private tail = createSuffix();
+	private partial = createSuffix();
 	private partialHasAnsi = false;
-	private partialAnsiPending: AnsiPending = { parser: "", characters: 0, bytes: 0 };
 	private bytes = 0;
 	private newlines = 0;
 	private endsWithNewline = false;
@@ -111,7 +102,7 @@ export class BoundedStreamBuffer {
 	/** Replace all speculative stream chunks with the authoritative final text. */
 	replaceFinal(value: string | Uint8Array): BoundedStreamSnapshot {
 		this.reset();
-		const decoded = typeof value === "string" ? replaceDanglingSurrogates(value) : new TextDecoder().decode(value);
+		const decoded = typeof value === "string" ? toUSVString(value) : new TextDecoder().decode(value);
 		this.appendDecoded(decoded);
 		this.isAuthoritative = true;
 		return this.snapshot();
@@ -122,11 +113,11 @@ export class BoundedStreamBuffer {
 	}
 
 	snapshot(): BoundedStreamSnapshot {
-		const partialValue = this.partialValue;
-		const partialPending = this.partialPending;
-		const partialStart = this.partialStart;
+		const partialValue = this.partial.value;
+		const partialPending = this.partial.pending;
+		const partialStart = this.partial.start;
 		const partialHasAnsi = this.partialHasAnsi;
-		const partialAnsiPendingCharacters = this.partialAnsiPending.characters;
+		const partialAnsiPendingCharacters = this.partial.ansiPending.characters;
 		let partial: string | undefined;
 		const partialText = () => {
 			if (partial !== undefined) return partial;
@@ -138,7 +129,7 @@ export class BoundedStreamBuffer {
 			return partial;
 		};
 		if (!this.truncated) {
-			const pendingCharacters = this.partialAnsiPending.characters;
+			const pendingCharacters = this.partial.ansiPending.characters;
 			const exact =
 				pendingCharacters > 0
 					? this.exactValue.slice(0, Math.max(0, this.exactValue.length - pendingCharacters))
@@ -158,12 +149,12 @@ export class BoundedStreamBuffer {
 			};
 		}
 
-		const tailValue = this.tailValue;
-		const tailPending = this.tailPending;
-		const tailStart = this.tailStart;
-		const tailSourceBytes = this.tailValueBytes;
-		const tailAnsiPendingCharacters = this.tailAnsiPending.characters;
-		const tailVisibleBytes = Math.max(0, tailSourceBytes - this.tailAnsiPending.bytes);
+		const tailValue = this.tail.value;
+		const tailPending = this.tail.pending;
+		const tailStart = this.tail.start;
+		const tailSourceBytes = this.tail.bytes;
+		const tailAnsiPendingCharacters = this.tail.ansiPending.characters;
+		const tailVisibleBytes = Math.max(0, tailSourceBytes - this.tail.ansiPending.bytes);
 		const totalBytes = this.bytes;
 		const head = this.headValue;
 		const headLength = byteLength(head);
@@ -226,7 +217,7 @@ export class BoundedStreamBuffer {
 			this.pendingHighSurrogate = decoded.at(-1) ?? "";
 			decoded = decoded.slice(0, -1);
 		}
-		if (decoded) this.appendDecoded(decoded);
+		if (decoded) this.appendDecoded(toUSVString(decoded));
 	}
 
 	private appendDecoded(decoded: string): void {
@@ -247,73 +238,14 @@ export class BoundedStreamBuffer {
 			}
 			const candidate = this.exactValue + decoded;
 			this.headValue = ansiSafePrefix(candidate, this.headBytes);
-			this.tailValue = ansiAlignedSuffix(candidate, this.tailBytes);
-			this.tailPending = "";
-			this.tailPendingBytes = 0;
-			this.tailStart = 0;
-			this.tailValueBytes = byteLength(this.tailValue);
-			this.tailAnsiPending = advanceAnsiPending({ parser: "", characters: 0, bytes: 0 }, this.tailValue);
+			this.tail = createSuffix(ansiAlignedSuffix(candidate, this.tailBytes));
 			this.exactValue = "";
 			this.exactBytes = 0;
 			this.truncated = true;
 			return;
 		}
 
-		this.tailPending += decoded;
-		this.tailPendingBytes += chunkBytes;
-		this.tailValueBytes += chunkBytes;
-		this.tailAnsiPending = advanceAnsiPending(this.tailAnsiPending, decoded);
-		if (this.tailValueBytes > this.tailBytes) {
-			this.trimTail(this.tailValueBytes - this.tailBytes);
-		}
-		if (this.tailStart >= TAIL_ROLL_BYTES || this.tailPendingBytes >= TAIL_ROLL_BYTES) {
-			this.compactTail();
-		}
-	}
-
-	private trimTail(excessBytes: number): void {
-		let removedBytes = 0;
-		let sequenceStart = terminalSequenceStart(this.tailValue, this.tailStart);
-		while (removedBytes < excessBytes) {
-			if (this.tailStart >= this.tailValue.length) {
-				this.compactTail();
-				sequenceStart = terminalSequenceStart(this.tailValue, this.tailStart);
-				if (!this.tailValue) break;
-			}
-			const start = this.tailStart;
-			const code = this.tailValue.codePointAt(start) ?? 0xfffd;
-			if (sequenceStart === start) {
-				let end = terminalSequenceEnd(this.tailValue, start)?.end;
-				if (end === undefined && this.tailPending) {
-					this.compactTail();
-					sequenceStart = terminalSequenceStart(this.tailValue, this.tailStart);
-					end = terminalSequenceEnd(this.tailValue, this.tailStart)?.end;
-				}
-				if (end === undefined) {
-					removedBytes += byteLengthRange(this.tailValue, this.tailStart, this.tailValue.length);
-					this.tailStart = this.tailValue.length;
-					sequenceStart = undefined;
-					continue;
-				}
-				removedBytes += byteLengthRange(this.tailValue, this.tailStart, end);
-				this.tailStart = end;
-				sequenceStart = terminalSequenceStart(this.tailValue, this.tailStart);
-				continue;
-			}
-			removedBytes += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
-			this.tailStart += code > 0xffff ? 2 : 1;
-			if (sequenceStart !== undefined && this.tailStart > sequenceStart) {
-				sequenceStart = terminalSequenceStart(this.tailValue, this.tailStart);
-			}
-		}
-		this.tailValueBytes = Math.max(0, this.tailValueBytes - removedBytes);
-	}
-
-	private compactTail(): void {
-		this.tailValue = retainedSuffix(this.tailValue, this.tailStart, this.tailPending);
-		this.tailPending = "";
-		this.tailPendingBytes = 0;
-		this.tailStart = 0;
+		appendSuffix(this.tail, decoded, this.tailBytes);
 	}
 
 	private flushPendingSurrogate(): void {
@@ -326,69 +258,13 @@ export class BoundedStreamBuffer {
 		const finalNewline = decoded.lastIndexOf("\n");
 		const chunk = finalNewline >= 0 ? decoded.slice(finalNewline + 1) : decoded;
 		if (finalNewline >= 0) {
-			this.partialValue = chunk;
-			this.partialPending = "";
-			this.partialPendingBytes = 0;
-			this.partialStart = 0;
-			this.partialBytes = byteLength(chunk);
+			this.partial = createSuffix(chunk);
 			this.partialHasAnsi = terminalSequenceStart(chunk) !== undefined;
-			this.partialAnsiPending = advanceAnsiPending({ parser: "", characters: 0, bytes: 0 }, chunk);
+			trimSuffix(this.partial, this.maxBytes);
 		} else if (chunk) {
-			const chunkBytes = byteLength(chunk);
-			this.partialPending += chunk;
-			this.partialPendingBytes += chunkBytes;
-			this.partialBytes += chunkBytes;
 			this.partialHasAnsi ||= terminalSequenceStart(chunk) !== undefined;
-			this.partialAnsiPending = advanceAnsiPending(this.partialAnsiPending, chunk);
+			appendSuffix(this.partial, chunk, this.maxBytes);
 		}
-		if (this.partialBytes > this.maxBytes) this.trimPartial(this.partialBytes - this.maxBytes);
-		if (this.partialStart >= TAIL_ROLL_BYTES || this.partialPendingBytes >= TAIL_ROLL_BYTES) {
-			this.compactPartial();
-		}
-	}
-
-	private trimPartial(excessBytes: number): void {
-		let removedBytes = 0;
-		let sequenceStart = terminalSequenceStart(this.partialValue, this.partialStart);
-		while (removedBytes < excessBytes) {
-			if (this.partialStart >= this.partialValue.length) {
-				this.compactPartial();
-				sequenceStart = terminalSequenceStart(this.partialValue, this.partialStart);
-				if (!this.partialValue) break;
-			}
-			const code = this.partialValue.codePointAt(this.partialStart) ?? 0xfffd;
-			if (sequenceStart === this.partialStart) {
-				let end = terminalSequenceEnd(this.partialValue, this.partialStart)?.end;
-				if (end === undefined && this.partialPending) {
-					this.compactPartial();
-					sequenceStart = terminalSequenceStart(this.partialValue, this.partialStart);
-					end = terminalSequenceEnd(this.partialValue, this.partialStart)?.end;
-				}
-				if (end === undefined) {
-					removedBytes += byteLengthRange(this.partialValue, this.partialStart, this.partialValue.length);
-					this.partialStart = this.partialValue.length;
-					sequenceStart = undefined;
-					continue;
-				}
-				removedBytes += byteLengthRange(this.partialValue, this.partialStart, end);
-				this.partialStart = end;
-				sequenceStart = terminalSequenceStart(this.partialValue, this.partialStart);
-				continue;
-			}
-			removedBytes += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
-			this.partialStart += code > 0xffff ? 2 : 1;
-			if (sequenceStart !== undefined && this.partialStart > sequenceStart) {
-				sequenceStart = terminalSequenceStart(this.partialValue, this.partialStart);
-			}
-		}
-		this.partialBytes = Math.max(0, this.partialBytes - removedBytes);
-	}
-
-	private compactPartial(): void {
-		this.partialValue = retainedSuffix(this.partialValue, this.partialStart, this.partialPending);
-		this.partialPending = "";
-		this.partialPendingBytes = 0;
-		this.partialStart = 0;
 	}
 
 	private lineCount(): number {
@@ -401,19 +277,9 @@ export class BoundedStreamBuffer {
 		this.exactBytes = 0;
 		this.truncated = false;
 		this.headValue = "";
-		this.tailValue = "";
-		this.tailPending = "";
-		this.tailPendingBytes = 0;
-		this.tailStart = 0;
-		this.tailValueBytes = 0;
-		this.tailAnsiPending = { parser: "", characters: 0, bytes: 0 };
-		this.partialValue = "";
-		this.partialPending = "";
-		this.partialPendingBytes = 0;
-		this.partialStart = 0;
-		this.partialBytes = 0;
+		this.tail = createSuffix();
+		this.partial = createSuffix();
 		this.partialHasAnsi = false;
-		this.partialAnsiPending = { parser: "", characters: 0, bytes: 0 };
 		this.bytes = 0;
 		this.newlines = 0;
 		this.endsWithNewline = false;
@@ -424,20 +290,80 @@ export class BoundedStreamBuffer {
 	}
 }
 
-function replaceDanglingSurrogates(value: string): string {
-	let result = "";
-	for (let index = 0; index < value.length; index += 1) {
-		const code = value.charCodeAt(index);
-		if (isHighSurrogate(code)) {
-			const next = value.charCodeAt(index + 1);
-			if (next >= 0xdc00 && next <= 0xdfff) {
-				result += value.slice(index, index + 2);
-				index += 1;
-			} else result += "\uFFFD";
-		} else if (code >= 0xdc00 && code <= 0xdfff) result += "\uFFFD";
-		else result += value[index];
+interface StreamSuffix {
+	value: string;
+	pending: string;
+	pendingBytes: number;
+	start: number;
+	bytes: number;
+	ansiPending: AnsiPending;
+}
+
+function createSuffix(value = ""): StreamSuffix {
+	return {
+		value,
+		pending: "",
+		pendingBytes: 0,
+		start: 0,
+		bytes: byteLength(value),
+		ansiPending: advanceAnsiPending({ parser: "", characters: 0, bytes: 0 }, value),
+	};
+}
+
+function appendSuffix(suffix: StreamSuffix, chunk: string, maxBytes: number): void {
+	const bytes = byteLength(chunk);
+	suffix.pending += chunk;
+	suffix.pendingBytes += bytes;
+	suffix.bytes += bytes;
+	suffix.ansiPending = advanceAnsiPending(suffix.ansiPending, chunk);
+	trimSuffix(suffix, maxBytes);
+}
+
+function trimSuffix(suffix: StreamSuffix, maxBytes: number): void {
+	const excessBytes = suffix.bytes - maxBytes;
+	let removedBytes = 0;
+	let sequenceStart = excessBytes > 0 ? terminalSequenceStart(suffix.value, suffix.start) : undefined;
+	while (removedBytes < excessBytes) {
+		if (suffix.start >= suffix.value.length) {
+			compactSuffix(suffix);
+			sequenceStart = terminalSequenceStart(suffix.value, suffix.start);
+			if (!suffix.value) break;
+		}
+		const start = suffix.start;
+		const code = suffix.value.codePointAt(start) ?? 0xfffd;
+		if (sequenceStart === start) {
+			let end = terminalSequenceEnd(suffix.value, start)?.end;
+			if (end === undefined && suffix.pending) {
+				compactSuffix(suffix);
+				sequenceStart = terminalSequenceStart(suffix.value, suffix.start);
+				end = terminalSequenceEnd(suffix.value, suffix.start)?.end;
+			}
+			if (end === undefined) {
+				removedBytes += byteLengthRange(suffix.value, suffix.start, suffix.value.length);
+				suffix.start = suffix.value.length;
+				sequenceStart = undefined;
+				continue;
+			}
+			removedBytes += byteLengthRange(suffix.value, suffix.start, end);
+			suffix.start = end;
+			sequenceStart = terminalSequenceStart(suffix.value, suffix.start);
+			continue;
+		}
+		removedBytes += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
+		suffix.start += code > 0xffff ? 2 : 1;
+		if (sequenceStart !== undefined && suffix.start > sequenceStart) {
+			sequenceStart = terminalSequenceStart(suffix.value, suffix.start);
+		}
 	}
-	return result;
+	suffix.bytes = Math.max(0, suffix.bytes - removedBytes);
+	if (suffix.start >= TAIL_ROLL_BYTES || suffix.pendingBytes >= TAIL_ROLL_BYTES) compactSuffix(suffix);
+}
+
+function compactSuffix(suffix: StreamSuffix): void {
+	suffix.value = retainedSuffix(suffix.value, suffix.start, suffix.pending);
+	suffix.pending = "";
+	suffix.pendingBytes = 0;
+	suffix.start = 0;
 }
 
 function isHighSurrogate(code: number): boolean {

@@ -258,6 +258,7 @@ export async function connectWebSocket(
 	env?: ProviderEnv,
 ): Promise<WebSocketLike> {
 	const WebSocketCtor = await getWebSocketConstructor(url, env);
+	if (signal?.aborted) throw new Error("Request was aborted");
 	if (!WebSocketCtor) {
 		throw new Error("WebSocket transport is not available in this runtime");
 	}

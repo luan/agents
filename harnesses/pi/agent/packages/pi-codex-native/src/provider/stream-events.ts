@@ -8,7 +8,7 @@ import {
 	DEFAULT_OVERLOAD_RETRY_DELAY_MS,
 	DEFAULT_RATE_LIMIT_RECOVERY_BUDGET_MS,
 } from "./constants.ts";
-import { isRetryableStreamStatus, isTerminalRateLimitError } from "./errors.ts";
+import { isRetryableStreamStatus, isTerminalRateLimitError, NonRetryableProviderError } from "./errors.ts";
 import { applyServiceTierPricing, resolveCodexServiceTier } from "./usage.ts";
 import type { OpenAICodexStreamOptions, ServiceTier, StreamEventShape } from "./types.ts";
 
@@ -77,7 +77,7 @@ export class CodexProtocolError extends Error {
 
 export function isRetryableCodexStreamError(error: unknown): boolean {
 	if (error instanceof CodexApiError) return error.retryable;
-	return !(error instanceof CodexProtocolError);
+	return !(error instanceof CodexProtocolError || error instanceof NonRetryableProviderError);
 }
 
 export function isCodexApiError(error: unknown): boolean {

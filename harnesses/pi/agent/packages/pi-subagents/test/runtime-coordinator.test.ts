@@ -14,10 +14,12 @@ import {
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
-	const promise = new Promise<T>((next) => {
+	let reject!: (error: Error) => void;
+	const promise = new Promise<T>((next, fail) => {
 		resolve = next;
+		reject = fail;
 	});
-	return { promise, resolve };
+	return { promise, resolve, reject };
 }
 
 async function flushPromises(): Promise<void> {
@@ -263,52 +265,62 @@ test("rejects restored transcript paths outside the canonical child directory", 
 	expect(coordinator.persistedAgent("/root/worker")?.transcriptFile).toBeUndefined();
 });
 
-test("serializes immediate post-interrupt follow-ups for initial and resumed turns", async () => {
-	const initial = deferred<never>();
-	const prompts: string[] = [];
-	const turns: Array<ReturnType<typeof deferred<void>>> = [];
-	const session = fakeSession(prompts, turns);
-	const runtime = { session, dispose: async () => {} } as never;
-	let starts = 0;
-	const run: CoordinatorOptions["run"] = ((_ctx: object, _message: string, options: object) => {
-		starts++;
-		const callbacks = options as {
-			onRuntimeCreated(runtime: never): void;
-			onSessionCreated(session: never): void;
-		};
-		callbacks.onRuntimeCreated(runtime);
-		callbacks.onSessionCreated(session);
-		return initial.promise;
-	}) as never;
-	const rootId = "interrupt-restart-root";
-	const coordinator = createRootCoordinator(rootId, { maxConcurrency: 3, run });
-	coordinator.spawn(undefined, request("worker"));
+test.each([
+	["resolve", "resolve"],
+	["resolve", "reject"],
+	["reject", "resolve"],
+	["reject", "reject"],
+] as const)(
+	"serializes post-interrupt follow-ups when initial turn %ss and resumed turn %ss",
+	async (initialResult, resumedResult) => {
+		const initial = deferred<never>();
+		const prompts: string[] = [];
+		const turns: Array<ReturnType<typeof deferred<void>>> = [];
+		const session = fakeSession(prompts, turns);
+		const runtime = { session, dispose: async () => {} } as never;
+		let starts = 0;
+		const run: CoordinatorOptions["run"] = ((_ctx: object, _message: string, options: object) => {
+			starts++;
+			const callbacks = options as {
+				onRuntimeCreated(runtime: never): void;
+				onSessionCreated(session: never): void;
+			};
+			callbacks.onRuntimeCreated(runtime);
+			callbacks.onSessionCreated(session);
+			return initial.promise;
+		}) as never;
+		const rootId = "interrupt-restart-root";
+		const coordinator = createRootCoordinator(rootId, { maxConcurrency: 3, run });
+		coordinator.spawn(undefined, request("worker"));
 
-	await coordinator.interrupt(undefined, "/root/worker");
-	await coordinator.followUp(undefined, "/root/worker", "continue initial");
-	expect(starts).toBe(1);
-	expect(prompts).toEqual([]);
+		await coordinator.interrupt(undefined, "/root/worker");
+		await coordinator.followUp(undefined, "/root/worker", "continue initial");
+		expect(starts).toBe(1);
+		expect(prompts).toEqual([]);
 
-	initial.resolve({ responseText: "partial", session, runtime } as never);
-	await flushPromises();
-	expect(prompts).toEqual([
-		"Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\ncontinue initial",
-	]);
+		if (initialResult === "resolve") initial.resolve({ responseText: "partial", session, runtime } as never);
+		else initial.reject(new Error("interrupted startup"));
+		await flushPromises();
+		expect(prompts).toEqual([
+			"Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\ncontinue initial",
+		]);
 
-	await coordinator.interrupt(undefined, "/root/worker");
-	await coordinator.followUp(undefined, "/root/worker", "continue resumed");
-	expect(prompts).toEqual([
-		"Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\ncontinue initial",
-	]);
+		await coordinator.interrupt(undefined, "/root/worker");
+		await coordinator.followUp(undefined, "/root/worker", "continue resumed");
+		expect(prompts).toEqual([
+			"Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\ncontinue initial",
+		]);
 
-	turns[0]?.resolve();
-	await flushPromises();
-	expect(prompts).toEqual([
-		"Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\ncontinue initial",
-		"Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\ncontinue resumed",
-	]);
-	removeRootCoordinator(rootId);
-});
+		if (resumedResult === "resolve") turns[0]?.resolve();
+		else turns[0]?.reject(new Error("interrupted resume"));
+		await flushPromises();
+		expect(prompts).toEqual([
+			"Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\ncontinue initial",
+			"Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\ncontinue resumed",
+		]);
+		removeRootCoordinator(rootId);
+	},
+);
 
 test("restores persisted fields without spreading live-only keys into agent state", () => {
 	const saved = {
@@ -399,4 +411,141 @@ test("ignores obsolete role fields when restoring old checkpoints", () => {
 	expect(coordinator.persistedAgent("/root/worker")).not.toHaveProperty("requestedRole");
 	expect(coordinator.persistedAgent("/root/worker")).not.toHaveProperty("modelRole");
 	coordinator.dispose();
+});
+
+test("late callbacks cannot change a settled turn", async () => {
+	const session = fakeSession([], []);
+	const runtime = { session, dispose: async () => {} } as never;
+	let callbacks: Parameters<NonNullable<CoordinatorOptions["run"]>>[2] | undefined;
+	const coordinator = createRootCoordinator("late-callbacks", {
+		run: async (_ctx, _message, options) => {
+			callbacks = options;
+			options.onRuntimeCreated?.(runtime);
+			options.onSessionCreated?.(session);
+			return { responseText: "done", session, runtime };
+		},
+	});
+	try {
+		coordinator.spawn(undefined, request("worker"));
+		await flushPromises();
+		const settled = coordinator.snapshot();
+		callbacks?.onToolActivity?.({ type: "start", toolName: "late-tool" });
+		callbacks?.onRuntimeResolved?.({ model: { provider: "late", id: "model" } });
+		expect(coordinator.snapshot()).toEqual(settled);
+	} finally {
+		removeRootCoordinator("late-callbacks");
+	}
+});
+
+test("disposes a runtime once when creation finishes after coordinator shutdown", async () => {
+	const session = fakeSession([], []);
+	let disposals = 0;
+	const runtime = {
+		session,
+		dispose: async () => {
+			disposals++;
+		},
+	} as never;
+	const created = deferred<void>();
+	const finished = deferred<void>();
+	const coordinator = new SubagentCoordinator("late-runtime", {
+		run: async (_ctx, _message, options) => {
+			await created.promise;
+			expect(options.signal?.aborted).toBe(true);
+			options.onRuntimeCreated?.(runtime);
+			options.onSessionCreated?.(session);
+			await finished.promise;
+			return { responseText: "late result", session, runtime };
+		},
+	});
+	coordinator.spawn(undefined, request("worker"));
+	coordinator.dispose();
+	created.resolve();
+	await flushPromises();
+	expect(disposals).toBe(1);
+	finished.resolve();
+	await flushPromises();
+	expect(disposals).toBe(1);
+	expect(coordinator.snapshot()).toEqual([]);
+	expect(coordinator.drainMailbox("/root")).toEqual([]);
+});
+
+test("retry after failed startup creates a runtime instead of resuming a disposed session", async () => {
+	const prompts: string[] = [];
+	const session = fakeSession(prompts, []);
+	let starts = 0;
+	let disposals = 0;
+	const runtime = {
+		session,
+		dispose: async () => {
+			disposals++;
+		},
+	} as never;
+	const coordinator = createRootCoordinator("retry-startup", {
+		run: async (_ctx, _message, options) => {
+			starts++;
+			if (starts === 1) {
+				options.onRuntimeCreated?.(runtime);
+				options.onSessionCreated?.(session);
+				throw new Error("startup failed");
+			}
+			return new Promise(() => undefined);
+		},
+	});
+	try {
+		coordinator.spawn(undefined, request("worker"));
+		await flushPromises();
+		expect(coordinator.snapshot()[0]?.status).toBe("failed");
+		expect(disposals).toBe(1);
+		await coordinator.followUp(undefined, "/root/worker", "retry");
+		expect(starts).toBe(2);
+		expect(prompts).toEqual([]);
+	} finally {
+		removeRootCoordinator("retry-startup");
+	}
+});
+
+test.each(["before", "during"] as const)(
+	"coordinator disposal %s a mailbox wait settles it immediately",
+	async (when) => {
+		const coordinator = new SubagentCoordinator("wait-shutdown");
+		const cancellation = new AbortController();
+		if (when === "before") coordinator.dispose();
+		let settled = false;
+		const waiting = coordinator.waitForUpdate(cancellation.signal).then((event) => {
+			settled = true;
+			return event;
+		});
+		try {
+			if (when === "during") coordinator.dispose();
+			await flushPromises();
+			expect(settled).toBe(true);
+			expect(await waiting).toBeUndefined();
+		} finally {
+			cancellation.abort();
+			await waiting;
+			coordinator.dispose();
+		}
+	},
+);
+
+test("a disposed coordinator rejects new work", async () => {
+	const coordinator = new SubagentCoordinator("disposed", { maxConcurrency: 1 });
+	coordinator.dispose();
+	expect(() => coordinator.spawn(undefined, request("worker"))).toThrow("disposed");
+	await expect(coordinator.sendMessage(undefined, "/root", "late")).rejects.toThrow("disposed");
+	expect(() => coordinator.restore({ version: 1, agents: [] })).toThrow("disposed");
+	expect(coordinator.snapshot()).toEqual([]);
+	expect(coordinator.drainMailbox("/root")).toEqual([]);
+});
+
+test("a cancelled spawn request does not register queued work", () => {
+	const coordinator = new SubagentCoordinator("cancel-spawn", { maxConcurrency: 1 });
+	const signal = AbortSignal.abort(new Error("spawn cancelled"));
+	try {
+		expect(() => coordinator.spawn(undefined, { ...request("worker"), signal })).toThrow("spawn cancelled");
+		expect(coordinator.snapshot()).toEqual([]);
+	} finally {
+		coordinator.dispose();
+	}
 });

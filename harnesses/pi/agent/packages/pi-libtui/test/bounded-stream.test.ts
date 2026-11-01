@@ -38,6 +38,20 @@ describe("BoundedStreamBuffer", () => {
 		expect(stringStream.snapshot().text).toBe(emoji);
 	});
 
+	test.each(["\ud800a", "a\udc00", "\ud800\ud800b", "A😀界Z", "tail\ud800"])(
+		"normalizes malformed UTF-16 consistently across string chunks: %j",
+		(source) => {
+			const expected = new TextDecoder().decode(new TextEncoder().encode(source));
+			for (let split = 0; split <= source.length; split++) {
+				const stream = new BoundedStreamBuffer({ maxBytes: 64 });
+				stream.append(source.slice(0, split));
+				stream.append(source.slice(split));
+				expect(stream.flush()).toMatchObject({ text: expected, totalBytes: Buffer.byteLength(expected) });
+				expect(stream.replaceFinal(source).text).toBe(expected);
+			}
+		},
+	);
+
 	test("retains code-point-safe head and tail edges", () => {
 		const stream = new BoundedStreamBuffer({
 			maxBytes: 12,
@@ -146,5 +160,46 @@ describe("BoundedStreamBuffer", () => {
 		expect(before.text).toBe("before");
 		expect(before.partialLine).toBe("before");
 		expect(stream.snapshot().text).toBe("before after");
+	});
+
+	test.each([0, 0.5, 1])("retains UTF-8 edges across byte boundaries with head share %s", (headShare) => {
+		const source = `${"A😀界Z\n".repeat(20)}${"尾🙂end".repeat(20)}`;
+		const bytes = Buffer.from(source);
+		const edge = (text: string, budget: number, tail = false): string => {
+			const points = Array.from(text);
+			if (tail) points.reverse();
+			const retained: string[] = [];
+			for (const point of points) {
+				budget -= Buffer.byteLength(point);
+				if (budget < 0) break;
+				retained.push(point);
+			}
+			return (tail ? retained.reverse() : retained).join("");
+		};
+		for (const maxBytes of [1, 7, 32]) {
+			const headBytes = Math.floor(maxBytes * headShare);
+			const head = edge(source, headBytes);
+			const tail = edge(source, maxBytes - headBytes, true);
+			for (const chunkBytes of [1, 7, 41]) {
+				const stream = new BoundedStreamBuffer({ maxBytes, headShare });
+				for (let offset = 0; offset < bytes.length; offset += chunkBytes)
+					stream.append(bytes.subarray(offset, offset + chunkBytes));
+				expect(stream.flush()).toMatchObject({
+					head,
+					tail,
+					partialLine: edge(source.slice(source.lastIndexOf("\n") + 1), maxBytes, true),
+					totalBytes: bytes.length,
+					omittedBytes: bytes.length - Buffer.byteLength(head + tail),
+				});
+			}
+		}
+	});
+
+	test("keeps lazy truncated snapshots stable across suffix resets and compaction", () => {
+		const stream = new BoundedStreamBuffer({ maxBytes: 8, omissionMarker: () => "<cut>" });
+		const before = stream.append("abcdefghijkl");
+		stream.append(`\n${"x".repeat(300_000)}`);
+		stream.clear();
+		expect(before).toMatchObject({ text: "abcd<cut>ijkl", partialLine: "efghijkl", omittedBytes: 4 });
 	});
 });

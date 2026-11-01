@@ -20,14 +20,16 @@ fn collect_until_exit(
             .read(process_id, Some(after_seq), max_bytes, Some(100))
             .unwrap();
         for chunk in response["chunks"].as_array().unwrap() {
-            after_seq = after_seq.max(chunk["seq"].as_u64().unwrap());
+            assert_eq!(chunk["startSeq"].as_u64().unwrap(), after_seq + 1);
+            after_seq = chunk["seq"].as_u64().unwrap();
             output.extend(
                 BASE64_STANDARD
                     .decode(chunk["chunk"].as_str().unwrap())
                     .unwrap(),
             );
         }
-        if response["more"] == false {
+        assert_eq!(response["nextSeq"].as_u64().unwrap(), after_seq + 1);
+        if response["more"] == false && response["closed"] == true {
             if let Some(exit_code) = response["exitCode"].as_i64() {
                 return (output, exit_code);
             }
@@ -124,13 +126,9 @@ fn running_process_group_accepts_interrupt(mut server: Server) {
     server
         .exec(&params(
             process_id,
-            &[
-                "sh",
-                "-c",
-                "trap 'exit 23' INT; printf ready; while :; do sleep 1; done",
-            ],
+            &["sh", "-c", "trap 'exit 23' INT; printf ready; read value"],
             false,
-            false,
+            true,
         ))
         .unwrap();
     let mut trapped = false;
@@ -151,6 +149,8 @@ fn running_process_group_accepts_interrupt(mut server: Server) {
     assert!(trapped, "process did not install its interrupt trap");
 
     assert_eq!(server.interrupt(process_id).unwrap()["running"], true);
+    // Finish stdin too: the trap's exit code proves delivery without requiring read to unblock on SIGINT.
+    let _ = server.write(process_id, b"\n");
     let (_, exit_code) = collect_until_exit(&server, process_id, None);
     assert_eq!(exit_code, 23);
 }
@@ -169,6 +169,34 @@ fn completed_processes_are_reaped_after_final_output_is_read(mut server: Server)
     let (output, exit_code) = collect_until_exit(&server, process_id, None);
     assert_eq!(output, b"done");
     assert_eq!(exit_code, 0);
+    assert_eq!(server.reap(process_id).unwrap()["removed"], true);
+}
+
+#[rstest::rstest]
+fn termination_reaches_children_after_the_shell_exits(mut server: Server) {
+    let process_id = "orphaned-child";
+    server
+        .exec(&params(
+            process_id,
+            &["sh", "-c", "trap '' HUP; cat <&0 &"],
+            false,
+            true,
+        ))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let response = loop {
+        let response = server.read(process_id, None, None, None).unwrap();
+        if response["exited"] == true {
+            break response;
+        }
+        assert!(std::time::Instant::now() < deadline, "shell did not exit");
+        std::thread::yield_now();
+    };
+    assert_eq!(response["closed"], false);
+
+    assert_eq!(server.terminate(process_id).unwrap()["running"], true);
+    let (_, exit_code) = collect_until_exit(&server, process_id, None);
+    assert_eq!(exit_code, 0, "the shell's status is preserved");
     assert_eq!(server.reap(process_id).unwrap()["removed"], true);
 }
 
@@ -215,4 +243,77 @@ proptest! {
             .expect_err("empty argv must be rejected");
         prop_assert_eq!(error.to_string(), "argv must not be empty");
     }
+}
+
+#[derive(Debug, Arbitrary)]
+struct BinaryOutput {
+    #[proptest(strategy = "proptest::collection::vec(any::<u8>(), 1..32768)")]
+    bytes: Vec<u8>,
+    #[proptest(strategy = "0usize..32768")]
+    budget: usize,
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
+    // Acknowledged reads preserve every byte even when one native chunk exceeds the budget.
+    #[test]
+    fn bounded_reads_preserve_binary_output(input: BinaryOutput) {
+        let mut server = Server::default();
+        let length = input.bytes.len().to_string();
+        server.exec(&params("binary", &["head", "-c", &length], false, true)).unwrap();
+        assert_eq!(server.write("binary", &input.bytes).unwrap()["status"], "accepted");
+        let (output, code) = collect_until_exit(&server, "binary", Some(input.budget));
+        prop_assert_eq!(output, input.bytes);
+        prop_assert_eq!(code, 0);
+        assert_eq!(server.reap("binary").unwrap()["removed"], true);
+    }
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn discarded_processes_release_their_ids(mut server: Server, #[case] tty: bool) {
+    let request = params("discarded", &["cat"], tty, true);
+    server.exec(&request).unwrap();
+    assert_eq!(server.discard("discarded").unwrap()["removed"], true);
+    assert_eq!(server.discard("discarded").unwrap()["removed"], false);
+    assert_eq!(
+        server.write("discarded", b"unreachable").unwrap()["status"],
+        "unknown_process"
+    );
+    server.exec(&request).unwrap();
+    assert_eq!(server.discard("discarded").unwrap()["removed"], true);
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn termination_closes_all_streams_and_allows_reuse(mut server: Server, #[case] tty: bool) {
+    let request = params(
+        "reused",
+        &["sh", "-c", "cat; printf unreachable"],
+        tty,
+        true,
+    );
+    server.exec(&request).unwrap();
+    assert!(
+        server.exec(&request).is_err(),
+        "duplicate ids must not replace a process"
+    );
+    assert!(
+        server.reap("reused").is_err(),
+        "a running process must not be removed"
+    );
+    assert_eq!(server.terminate("reused").unwrap()["running"], true);
+    let (_, exit_code) = collect_until_exit(&server, "reused", None);
+    assert_ne!(exit_code, 0);
+    assert_eq!(server.terminate("reused").unwrap()["running"], false);
+    assert_eq!(server.reap("reused").unwrap()["removed"], true);
+    server.exec(&request).unwrap();
+    server.shutdown();
+    assert_eq!(
+        server.write("reused", b"hello").unwrap()["status"],
+        "unknown_process"
+    );
 }

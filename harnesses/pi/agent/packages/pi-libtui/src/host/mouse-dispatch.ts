@@ -115,10 +115,7 @@ export function installMouseDispatch(tui: TUI, prototype: object, registry: Mous
 	const existing = Reflect.get(prototype, INSTALLATION_KEY) as PiPrivateValue;
 	if (isInstallation(existing)) {
 		existing.refs += 1;
-		let disposed = false;
 		return finish(() => {
-			if (disposed) return;
-			disposed = true;
 			existing.refs -= 1;
 			if (existing.refs === 0) existing.dispose();
 		});
@@ -179,13 +176,28 @@ export function installMouseDispatch(tui: TUI, prototype: object, registry: Mous
 		}
 		state.textClick = undefined;
 	};
-	const cancelTextClick = (state: PointerState, parsed: ParsedMouseEvent | undefined): void => {
-		if (!state.textClick) return;
-		if (parsed) send(state.textClick.target, "release", { ...parsed, rawButton: 3 });
+	const clearPointerState = (state: PointerState): void => {
+		const lastPointer = state.lastPointer;
+		if (lastPointer) {
+			// Cancellation leaves targets; a synthetic release can activate legacy controls.
+			const cleared = new Set<object>();
+			for (const target of [state.capture, state.hover, state.textClick?.target]) {
+				if (!target || cleared.has(target.key)) continue;
+				cleared.add(target.key);
+				send(target, "leave", { ...lastPointer, rawButton: 3 });
+			}
+		}
 		state.textClick = undefined;
+		state.capture = undefined;
+		state.hover = undefined;
+		state.lastPointer = undefined;
+		state.nativePrimaryPress = undefined;
+		setKeyboardTarget(state, undefined);
 	};
 
 	const patched: ViewportInputHandler = function (data) {
+		// A later wrapper may still delegate here after the last lease is released.
+		if (installation.refs === 0) return Reflect.apply(original, this, [data]);
 		let state = states.get(this);
 		if (!state) {
 			state = {};
@@ -194,18 +206,8 @@ export function installMouseDispatch(tui: TUI, prototype: object, registry: Mous
 		const mouseInput = parseMouse(data);
 		if (mouseInput.kind !== "event") {
 			if (data === FOCUS_OUT) {
-				const lastPointer = state.lastPointer;
 				const hadPointerState = Boolean(state.capture || state.hover || state.textClick);
-				if (lastPointer) {
-					if (state.capture) send(state.capture, "release", { ...lastPointer, rawButton: 3 });
-					if (state.hover) send(state.hover, "leave", lastPointer);
-				}
-				cancelTextClick(state, lastPointer);
-				state.capture = undefined;
-				state.hover = undefined;
-				state.lastPointer = undefined;
-				state.nativePrimaryPress = undefined;
-				setKeyboardTarget(state, undefined);
+				clearPointerState(state);
 				if (hadPointerState) requestRender(this);
 			}
 			if (data === FOCUS_IN || data === FOCUS_OUT || mouseInput.kind === "unsupported") {
@@ -296,6 +298,8 @@ export function installMouseDispatch(tui: TUI, prototype: object, registry: Mous
 			requestRender(this);
 			return { consume: true };
 		}
+		// A release-driven control must not receive the tail of a cancelled or native gesture.
+		if (parsed.type === "drag" || parsed.type === "release") return Reflect.apply(original, this, [data]);
 
 		if (parsed.type === "move") {
 			const previousHover = state.hover;
@@ -305,12 +309,10 @@ export function installMouseDispatch(tui: TUI, prototype: object, registry: Mous
 				}
 			}
 			let next: MouseTarget | undefined;
-			let handled = false;
 			for (const target of targetsAt(this, parsed.x, parsed.y, true)) {
 				const type = state.hover?.key === target.key ? "move" : "enter";
 				if (!send(target, type, parsed)) continue;
 				next = target;
-				handled = true;
 				break;
 			}
 			if (previousHover && previousHover.key !== next?.key) send(previousHover, "leave", parsed);
@@ -319,7 +321,7 @@ export function installMouseDispatch(tui: TUI, prototype: object, registry: Mous
 			// bridge only redraws for target transitions, keeping raw motion storms O(1)
 			// when the pointer remains over the same affordance.
 			if (previousHover?.key !== next?.key) requestRender(this);
-			return handled ? { consume: true } : Reflect.apply(original, this, [data]);
+			return next ? { consume: true } : Reflect.apply(original, this, [data]);
 		}
 
 		let prepassedOverlayKeys: ReadonlySet<object> | undefined;
@@ -374,20 +376,14 @@ export function installMouseDispatch(tui: TUI, prototype: object, registry: Mous
 			if (restored) return;
 			const current = Reflect.get(prototype, INSTALLATION_KEY) as PiPrivateValue;
 			if (current !== installation) return;
-			if (Reflect.get(prototype, "handleViewportInput") !== patched) return;
-			restored = true;
-			if (registryState.viewportPreserver === preserveViewport) registryState.viewportPreserver = undefined;
 			for (const [renderer, state] of states) {
-				if (state.lastPointer) {
-					if (state.capture) send(state.capture, "release", { ...state.lastPointer, rawButton: 3 });
-					if (state.hover) send(state.hover, "leave", state.lastPointer);
-				}
-				cancelTextClick(state, state.lastPointer);
-				state.nativePrimaryPress = undefined;
-				setKeyboardTarget(state, undefined);
+				clearPointerState(state);
 				requestRender(renderer);
 			}
 			states.clear();
+			if (Reflect.get(prototype, "handleViewportInput") !== patched) return;
+			restored = true;
+			if (registryState.viewportPreserver === preserveViewport) registryState.viewportPreserver = undefined;
 			removeFullscreenLayoutCapability();
 			Reflect.set(prototype, "handleViewportInput", original);
 			Reflect.set(prototype, INSTALLATION_KEY, undefined);
@@ -396,10 +392,7 @@ export function installMouseDispatch(tui: TUI, prototype: object, registry: Mous
 	Reflect.set(prototype, "handleViewportInput", patched);
 	Reflect.set(prototype, INSTALLATION_KEY, installation);
 
-	let disposed = false;
 	return finish(() => {
-		if (disposed) return;
-		disposed = true;
 		installation.refs -= 1;
 		if (installation.refs === 0) installation.dispose();
 	});

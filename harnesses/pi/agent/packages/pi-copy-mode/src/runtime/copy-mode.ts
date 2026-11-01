@@ -1,13 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import {
-	decodeKittyPrintable,
-	isKeyRelease,
-	matchesKey,
-	sliceByColumn,
-	stripTerminalSequences,
-	visibleWidth,
-} from "@earendil-works/pi-tui";
+import { decodeKittyPrintable, isKeyRelease, matchesKey, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { mountSelectionActionBar, TransientPill } from "@luan.sh/pi-libtui";
 import {
 	ensureFoldingRegistry,
@@ -16,8 +9,8 @@ import {
 	foldTargetAt,
 } from "@luan.sh/pi-libtui/folding";
 import { ensureMouseRegistry, type MouseRegistry, type TuiMouseEvent } from "@luan.sh/pi-libtui/mouse";
-import type { NativeSelectionCompleted, SelectionQuoteAnchor, SelectionShape } from "@luan.sh/pi-libtui/selection";
-import { ensureSelectionRegistry, type SelectionPoint, type SelectionRegistry } from "@luan.sh/pi-libtui/selection";
+import type { NativeSelectionCompleted } from "@luan.sh/pi-libtui/selection";
+import { ensureSelectionRegistry, type SelectionRegistry } from "@luan.sh/pi-libtui/selection";
 import {
 	type CopyModeAction,
 	type CopyModeKeybindings,
@@ -26,7 +19,6 @@ import {
 } from "../config/keybindings.ts";
 import { getCopyModeSettings } from "../config/settings.ts";
 import {
-	type CursorDocument,
 	type CursorMotion,
 	type CursorPoint,
 	clampCursor,
@@ -34,6 +26,7 @@ import {
 	moveCursor,
 	moveVirtualCursor,
 	scrollTopForCursor,
+	verticalMotionRow,
 } from "../core/cursor.ts";
 import {
 	type CharMotion,
@@ -49,6 +42,8 @@ import {
 import { decorateCopyCursor, decorateCopyScreen } from "../ui/screen-decoration.ts";
 import { type FullscreenSurface, validateFullscreenSurface } from "./fullscreen-surface.ts";
 
+import { copySelectionPayload, copySelectionText, type CopySelectionState } from "./selection.ts";
+
 const STATUS_KEY = "pi-copy-mode.active";
 const TARGET_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const MAX_COUNT = 9_999;
@@ -58,14 +53,6 @@ const FOLD_ACTIONS = [
 	"copy-mode.foldOpenAll",
 	"copy-mode.foldCloseAll",
 ] as const;
-type SelectionKind = "cursor" | "character" | "line" | "column";
-type CopySelectionPayload = NativeSelectionCompleted & {
-	text: string;
-	shape: SelectionShape;
-	screenAnchor: SelectionPoint;
-	source: { quote: SelectionQuoteAnchor; offsets?: { start: number; end: number } };
-};
-
 const MOTIONS: Partial<Record<CopyModeAction, CursorMotion>> = {
 	"copy-mode.up": "up",
 	"copy-mode.down": "down",
@@ -98,24 +85,21 @@ export interface CopyModeHostOptions {
 
 export function createCopyModeHost(tui: TUI, ctx: ExtensionContext, options: CopyModeHostOptions = {}): CopyModeHost {
 	let modeActive = false;
-	let selectionKind: SelectionKind = "cursor";
+	let selectionKind: CopySelectionState["kind"] = "cursor";
 	let disposed = false;
 	let cursor: CursorPoint = { row: 0, col: 0 };
 	let anchor: CursorPoint = cursor;
 	let preferredCol = 0;
 	let removeFallbackInput: (() => void) | undefined;
 	let removeViewportInput: (() => void) | undefined;
-	let reinstallModalInput: (() => void) | undefined;
 	let interactionPending = false;
 	let suppressFallbackData: string | undefined;
 	let removeScreenDecorator: (() => void) | undefined;
 	let removeCursorDecorator: (() => void) | undefined;
 	let removeMouseRegion: (() => void) | undefined;
-	let removeSelectionModeInput: (() => void) | undefined;
 	let completedSelection: NativeSelectionCompleted | undefined;
 	let selectionMode = false;
 	let exitAfterInteraction = false;
-	let activeInput: ((data: string) => { consume: true } | undefined) | undefined;
 	let countDigits = "";
 	let pendingChar: { motion: CharMotion; count: number } | undefined;
 	let lastChar: LastCharMotion | undefined;
@@ -238,15 +222,6 @@ export function createCopyModeHost(tui: TUI, ctx: ExtensionContext, options: Cop
 		},
 	});
 
-	function document(activeSurface: FullscreenSurface): CursorDocument {
-		return {
-			lineCount: activeSurface.lineCount,
-			lineWidth: (row) => activeSurface.lineWidth(row),
-			lineStops: (row) => activeSurface.lineStops(row),
-			viewportHeight: activeSurface.viewportHeight,
-		};
-	}
-
 	function status(): string {
 		const base = selectionKind === "cursor" ? "COPY MODE" : `COPY MODE · ${selectionKind}`;
 		if (pendingChar) return `${base} · ${pendingChar.count > 1 ? pendingChar.count : ""}${pendingChar.motion}`;
@@ -257,175 +232,16 @@ export function createCopyModeHost(tui: TUI, ctx: ExtensionContext, options: Cop
 		return { lineCount: activeSurface.lineCount, line: (row) => stripTerminalSequences(activeSurface.line(row)) };
 	}
 
-	function columnBounds(activeSurface: FullscreenSurface): {
-		top: number;
-		bottom: number;
-		left: number;
-		right: number;
-	} {
-		return {
-			top: Math.min(anchor.row, cursor.row),
-			bottom: Math.max(anchor.row, cursor.row),
-			left: Math.min(anchor.col, cursor.col),
-			right: Math.max(
-				anchor.col + 1,
-				cursor.col + 1,
-				graphemeEnd(anchor, document(activeSurface)),
-				graphemeEnd(cursor, document(activeSurface)),
-			),
-		};
+	function selectionState(): CopySelectionState {
+		return { kind: selectionKind, anchor, cursor };
 	}
 
-	function columnText(activeSurface: FullscreenSurface): string {
-		const bounds = columnBounds(activeSurface);
-		const width = bounds.right - bounds.left;
-		return Array.from({ length: bounds.bottom - bounds.top + 1 }, (_unused, index) =>
-			activeSurface.line(bounds.top + index),
-		)
-			.map((line) => {
-				const selected = stripTerminalSequences(sliceByColumn(line, bounds.left, width, true));
-				return selected + " ".repeat(Math.max(0, width - visibleWidth(selected)));
-			})
-			.join("\n");
-	}
-
-	function lineText(activeSurface: FullscreenSurface): string {
-		const top = Math.min(anchor.row, cursor.row);
-		const bottom = Math.max(anchor.row, cursor.row);
-		return `${Array.from({ length: bottom - top + 1 }, (_unused, index) => stripTerminalSequences(activeSurface.line(top + index))).join("\n")}\n`;
-	}
-
-	function characterText(activeSurface: FullscreenSurface, trimRows = true): string {
-		const renderedAnchor = activeSurface.selectionAnchor ?? activeSurface.point(anchor);
-		const renderedFocus = activeSurface.selectionFocus ?? activeSurface.point(cursor);
-		const anchorFirst =
-			renderedAnchor.row < renderedFocus.row ||
-			(renderedAnchor.row === renderedFocus.row && renderedAnchor.col <= renderedFocus.col);
-		const start = anchorFirst ? renderedAnchor : renderedFocus;
-		const end = anchorFirst ? renderedFocus : renderedAnchor;
-		return Array.from({ length: end.row - start.row + 1 }, (_unused, index) => {
-			const row = start.row + index;
-			const from = row === start.row ? start.col : 0;
-			const to =
-				row === end.row
-					? end.boundary === true
-						? end.col
-						: graphemeEnd({ row, col: end.col }, document(activeSurface))
-					: activeSurface.lineWidth(row);
-			const selected = stripTerminalSequences(
-				sliceByColumn(activeSurface.line(row), from, Math.max(0, to - from), true),
-			);
-			return trimRows ? selected.trimEnd() : selected;
-		}).join("\n");
-	}
-
-	function sourceOffset(activeSurface: FullscreenSurface, point: CursorPoint): number {
-		let offset = 0;
-		for (let row = 0; row < point.row; row += 1) offset += stripTerminalSequences(activeSurface.line(row)).length + 1;
-		return offset + stripTerminalSequences(sliceByColumn(activeSurface.line(point.row), 0, point.col, true)).length;
-	}
-
-	function sourceQuote(activeSurface: FullscreenSurface, start: CursorPoint, exact: string): SelectionQuoteAnchor {
-		const context = 80;
-		const source = Array.from({ length: activeSurface.lineCount }, (_, row) =>
-			stripTerminalSequences(activeSurface.line(row)),
-		).join("\n");
-		const offset = sourceOffset(activeSurface, start);
-		if (source.slice(offset, offset + exact.length) !== exact) return { exact };
-		return {
-			exact,
-			...(offset > 0 ? { prefix: source.slice(Math.max(0, offset - context), offset) } : {}),
-			...(offset + exact.length < source.length
-				? { suffix: source.slice(offset + exact.length, offset + exact.length + context) }
-				: {}),
-		};
-	}
-
-	function selectionFor(activeSurface: FullscreenSurface): CopySelectionPayload {
-		if (selectionKind === "column") {
-			const bounds = columnBounds(activeSurface);
-			const start = { row: bounds.top, col: bounds.left };
-			const end = { row: bounds.bottom, col: bounds.right };
-			const text = columnText(activeSurface);
-			return {
-				text,
-				shape: "column",
-				screenAnchor: activeSurface.screenPoint(end),
-				logical: { start, end },
-				screen: { start: activeSurface.screenPoint(start), end: activeSurface.screenPoint(end) },
-				source: { quote: { exact: text } },
-			};
-		}
-		if (selectionKind === "line") {
-			const top = Math.min(anchor.row, cursor.row);
-			const bottom = Math.max(anchor.row, cursor.row);
-			const start = { row: top, col: 0 };
-			const end = { row: bottom, col: activeSurface.lineGlyphWidth(bottom) };
-			const text = lineText(activeSurface);
-			const lineEnd = bottom + 1 < activeSurface.lineCount ? { row: bottom + 1, col: 0 } : end;
-			return {
-				text,
-				shape: "line",
-				screenAnchor: activeSurface.screenPoint({ row: bottom, col: activeSurface.lineGlyphWidth(bottom) }),
-				logical: { start, end },
-				screen: {
-					start: activeSurface.screenPoint(start),
-					end: activeSurface.screenPoint({ row: bottom, col: activeSurface.lineGlyphWidth(bottom) }),
-				},
-				source: {
-					...(bottom + 1 < activeSurface.lineCount
-						? { offsets: { start: sourceOffset(activeSurface, start), end: sourceOffset(activeSurface, lineEnd) } }
-						: {}),
-					quote: sourceQuote(activeSurface, start, text),
-				},
-			};
-		}
-		if (selectionKind === "cursor") {
-			const start = { ...cursor };
-			const end = { row: cursor.row, col: graphemeEnd(cursor, document(activeSurface)) };
-			const text = characterText(activeSurface);
-			return {
-				text,
-				shape: "character",
-				screenAnchor: activeSurface.screenPoint(end),
-				logical: { start, end },
-				screen: { start: activeSurface.screenPoint(start), end: activeSurface.screenPoint(end) },
-				source: {
-					offsets: { start: sourceOffset(activeSurface, start), end: sourceOffset(activeSurface, end) },
-					quote: sourceQuote(activeSurface, start, text),
-				},
-			};
-		}
-		const renderedAnchor = activeSurface.selectionAnchor ?? activeSurface.point(anchor);
-		const renderedFocus = activeSurface.selectionFocus ?? activeSurface.point(cursor);
-		const anchorPoint = { row: renderedAnchor.row, col: renderedAnchor.col };
-		const focusPoint = { row: renderedFocus.row, col: renderedFocus.col };
-		const first =
-			anchorPoint.row < focusPoint.row || (anchorPoint.row === focusPoint.row && anchorPoint.col <= focusPoint.col)
-				? anchorPoint
-				: focusPoint;
-		const last = first === anchorPoint ? focusPoint : anchorPoint;
-		const renderedLast = first === anchorPoint ? renderedFocus : renderedAnchor;
-		const logical = { start: { ...first }, end: { ...last } };
-		const text = characterText(activeSurface);
-		const characterEnd = {
-			row: last.row,
-			col: renderedLast.boundary === true ? last.col : graphemeEnd(last, document(activeSurface)),
-		};
-		const offsets = { start: sourceOffset(activeSurface, first), end: sourceOffset(activeSurface, characterEnd) };
-		const offsetsAreExact = characterText(activeSurface, false) === text;
-		return {
-			text,
-			shape: "character",
-			screenAnchor: activeSurface.screenPoint(characterEnd),
-			logical,
-			screen: { start: activeSurface.screenPoint(first), end: activeSurface.screenPoint(characterEnd) },
-			source: { ...(offsetsAreExact ? { offsets } : {}), quote: sourceQuote(activeSurface, first, text) },
-		};
+	function selectionFor(activeSurface: FullscreenSurface) {
+		return copySelectionPayload(activeSurface, selectionState());
 	}
 
 	function applySelection(activeSurface: FullscreenSurface): void {
-		const end = graphemeEnd(cursor, document(activeSurface));
+		const end = graphemeEnd(cursor, activeSurface);
 		if (selectionKind === "column" || selectionKind === "cursor" || selectionKind === "line") {
 			activeSurface.setSelection(undefined, undefined);
 		} else if (anchor.row === cursor.row && anchor.col === cursor.col) {
@@ -505,18 +321,13 @@ export function createCopyModeHost(tui: TUI, ctx: ExtensionContext, options: Cop
 			}
 		} finally {
 			interactionPending = false;
-			if (modeActive && !disposed) reinstallModalInput?.();
+			if (modeActive && !disposed) installModalInput();
 		}
 	}
 
 	async function copyCurrentSelection(activeSurface: FullscreenSurface): Promise<void> {
 		const anchorPoint = activeSurface.screenPoint(cursor);
-		const text =
-			selectionKind === "column"
-				? columnText(activeSurface)
-				: selectionKind === "line"
-					? lineText(activeSurface)
-					: characterText(activeSurface);
+		const text = copySelectionText(activeSurface, selectionState());
 		const copying = activeSurface.copyText(text);
 		exit(true);
 		const copied = await copying;
@@ -547,8 +358,6 @@ export function createCopyModeHost(tui: TUI, ctx: ExtensionContext, options: Cop
 		removeMouseRegion?.();
 		removeMouseRegion = undefined;
 		removeModalInput();
-		activeInput = undefined;
-		reinstallModalInput = undefined;
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 		const activeSurface = surface();
 		if (clearSelection && activeSurface) {
@@ -558,7 +367,7 @@ export function createCopyModeHost(tui: TUI, ctx: ExtensionContext, options: Cop
 	}
 
 	function commitCursor(activeSurface: FullscreenSurface, next: CursorPoint, updatePreferred = true): void {
-		cursor = selectionKind === "column" ? next : clampCursor(next, document(activeSurface));
+		cursor = selectionKind === "column" ? next : clampCursor(next, activeSurface);
 		if (updatePreferred) preferredCol = cursor.col;
 		const nextTop = scrollTopForCursor(cursor, activeSurface.scrollTop, activeSurface.viewportHeight);
 		if (nextTop !== activeSurface.scrollTop) activeSurface.scrollTo(nextTop);
@@ -599,37 +408,8 @@ export function createCopyModeHost(tui: TUI, ctx: ExtensionContext, options: Cop
 		}
 		const motion = MOTIONS[action];
 		if (motion) {
-			if (
-				selectionKind !== "column" &&
-				[
-					"up",
-					"down",
-					"half-page-up",
-					"half-page-down",
-					"page-up",
-					"page-down",
-					"document-start",
-					"document-end",
-				].includes(motion)
-			) {
-				const page = Math.max(1, activeSurface.viewportHeight);
-				const halfPage = Math.max(1, Math.floor(page / 2));
-				const row =
-					motion === "up"
-						? cursor.row - count
-						: motion === "down"
-							? cursor.row + count
-							: motion === "half-page-up"
-								? cursor.row - halfPage * count
-								: motion === "half-page-down"
-									? cursor.row + halfPage * count
-									: motion === "page-up"
-										? cursor.row - page * count
-										: motion === "page-down"
-											? cursor.row + page * count
-											: motion === "document-start"
-												? 0
-												: activeSurface.lineCount - 1;
+			const row = verticalMotionRow(cursor.row, motion, activeSurface, count);
+			if (selectionKind !== "column" && row !== undefined) {
 				commitCursor(activeSurface, { row, col: preferredCol }, false);
 				return;
 			}
@@ -642,7 +422,7 @@ export function createCopyModeHost(tui: TUI, ctx: ExtensionContext, options: Cop
 								viewportHeight: activeSurface.viewportHeight,
 								maxColumn: Math.max(0, activeSurface.viewportRect.width - 1),
 							})
-						: moveCursor(next, motion, document(activeSurface));
+						: moveCursor(next, motion, activeSurface);
 			}
 			commitCursor(activeSurface, next);
 			return;
@@ -700,38 +480,22 @@ export function createCopyModeHost(tui: TUI, ctx: ExtensionContext, options: Cop
 				break;
 			}
 			case "copy-mode.toggleSelection":
-				if (selectionKind === "cursor") {
-					selectionKind = "character";
-					anchor = cursor;
-				} else if (selectionKind === "character") {
-					selectionKind = "cursor";
-					anchor = cursor;
-				} else selectionKind = "character";
-				ctx.ui.setStatus(STATUS_KEY, status());
-				applySelection(activeSurface);
-				break;
 			case "copy-mode.lineSelection":
-				if (selectionKind === "cursor") {
-					selectionKind = "line";
+			case "copy-mode.columnSelection": {
+				const kind =
+					action === "copy-mode.toggleSelection"
+						? "character"
+						: action === "copy-mode.lineSelection"
+							? "line"
+							: "column";
+				if (selectionKind === "cursor" || selectionKind === kind) {
 					anchor = cursor;
-				} else if (selectionKind === "line") {
-					selectionKind = "cursor";
-					anchor = cursor;
-				} else selectionKind = "line";
+					selectionKind = selectionKind === kind ? "cursor" : kind;
+				} else selectionKind = kind;
 				ctx.ui.setStatus(STATUS_KEY, status());
 				applySelection(activeSurface);
 				break;
-			case "copy-mode.columnSelection":
-				if (selectionKind === "cursor") {
-					selectionKind = "column";
-					anchor = cursor;
-				} else if (selectionKind === "column") {
-					selectionKind = "cursor";
-					anchor = cursor;
-				} else selectionKind = "column";
-				ctx.ui.setStatus(STATUS_KEY, status());
-				applySelection(activeSurface);
-				break;
+			}
 			case "copy-mode.swapEnds": {
 				if (selectionKind === "cursor") break;
 				const previousAnchor = anchor;
@@ -790,36 +554,29 @@ export function createCopyModeHost(tui: TUI, ctx: ExtensionContext, options: Cop
 			completedSelection = undefined;
 			return false;
 		}
-		if (modeActive && adoptSelection && activeSurface.selectionAnchor && activeSurface.selectionFocus) {
-			countDigits = "";
-			pendingChar = undefined;
-			pendingFoldPrefix = false;
-			anchor = { row: activeSurface.selectionAnchor.row, col: activeSurface.selectionAnchor.col };
-			cursor = clampCursor(
-				{ row: activeSurface.selectionFocus.row, col: activeSurface.selectionFocus.col },
-				document(activeSurface),
-			);
-			preferredCol = cursor.col;
-			selectionKind = "character";
-			ctx.ui.setStatus(STATUS_KEY, status());
-			activeSurface.requestImmediateRender();
-			return true;
-		}
-		if (modeActive) return true;
+		if (modeActive && !adoptSelection) return true;
 		if (adoptSelection && activeSurface.selectionAnchor && activeSurface.selectionFocus) {
 			anchor = { row: activeSurface.selectionAnchor.row, col: activeSurface.selectionAnchor.col };
 			cursor = clampCursor(
 				{ row: activeSurface.selectionFocus.row, col: activeSurface.selectionFocus.col },
-				document(activeSurface),
+				activeSurface,
 			);
 			preferredCol = cursor.col;
 			selectionKind = "character";
 		} else {
 			const bottom = Math.min(activeSurface.lineCount - 1, activeSurface.scrollTop + activeSurface.viewportHeight - 1);
-			cursor = clampCursor({ row: Math.max(0, bottom), col: 0 }, document(activeSurface));
+			cursor = clampCursor({ row: Math.max(0, bottom), col: 0 }, activeSurface);
 			preferredCol = cursor.col;
 			anchor = cursor;
 			selectionKind = "cursor";
+		}
+		if (modeActive) {
+			countDigits = "";
+			pendingChar = undefined;
+			pendingFoldPrefix = false;
+			ctx.ui.setStatus(STATUS_KEY, status());
+			activeSurface.requestImmediateRender();
+			return true;
 		}
 		modeActive = true;
 		ctx.ui.setStatus(STATUS_KEY, status());
@@ -871,118 +628,112 @@ export function createCopyModeHost(tui: TUI, ctx: ExtensionContext, options: Cop
 		});
 		if (adoptSelection) activeSurface.requestImmediateRender();
 		else applySelection(activeSurface);
-		const handleModalInput = (data: string): { consume: true } | undefined => {
-			if (!modeActive || isKeyRelease(data) || tui.hasOverlay()) return undefined;
-			// Some terminal/input bridges deliver a short printable sequence as one
-			// chunk. Preserve Vim fold chords in that case instead of treating `zc`
-			// as an unknown printable command.
-			const foldPrefix =
-				data.length === 2 ? bindings["copy-mode.foldPrefix"]?.find((key) => matchesKey(data[0]!, key)) : undefined;
-			if (
-				!pendingFoldPrefix &&
-				foldPrefix &&
-				data.length === 2 &&
-				/^[\x20-\x7e]{2}$/u.test(data) &&
-				matchesKey(data[0]!, foldPrefix)
-			) {
-				pendingFoldPrefix = true;
-				return handleModalInput(data[1]!);
-			}
-			const action = matchesKey(data, "ctrl+[")
-				? matchCopyModeAction("\x1b", bindings)
-				: matchCopyModeAction(data, bindings);
-			if (pendingFoldPrefix) {
-				pendingFoldPrefix = false;
-				const foldAction = FOLD_ACTIONS.find((candidate) => bindings[candidate]?.some((key) => matchesKey(data, key)));
-				if (foldAction) {
-					handleAction(foldAction);
-					ctx.ui.setStatus(STATUS_KEY, status());
-					return { consume: true };
-				}
-				ctx.ui.setStatus(STATUS_KEY, status());
-				return { consume: true };
-			}
-			if (action === "copy-mode.foldPrefix") {
-				pendingFoldPrefix = true;
-				ctx.ui.setStatus(STATUS_KEY, status());
-				return { consume: true };
-			}
-			if (action && FOLD_ACTIONS.some((candidate) => candidate === action)) {
-				// Fold suffixes are scoped to the configured prefix. They are not
-				// package-owned standalone shortcuts.
-				countDigits = "";
-				ctx.ui.setStatus(STATUS_KEY, status());
-				return { consume: true };
-			}
-			if (action === "copy-mode.clearSelection" && (pendingChar || countDigits)) {
-				pendingChar = undefined;
-				countDigits = "";
-				ctx.ui.setStatus(STATUS_KEY, status());
-				return { consume: true };
-			}
-			const decoded = decodeKittyPrintable(data);
-			const printable = decoded ?? (/^[^\x00-\x1f\x7f]+$/u.test(data) ? data : undefined);
-			if (pendingChar && printable) {
-				const pending = pendingChar;
-				pendingChar = undefined;
-				const activeSurface = surface();
-				const target = [...TARGET_SEGMENTER.segment(printable)][0]?.segment;
-				if (activeSurface && target) executeCharMotion(activeSurface, pending.motion, target, pending.count, false);
-				ctx.ui.setStatus(STATUS_KEY, status());
-				return { consume: true };
-			}
-			if (pendingChar) {
-				pendingChar = undefined;
-				countDigits = "";
-				ctx.ui.setStatus(STATUS_KEY, status());
-				return { consume: true };
-			}
-			if (printable && /^\d$/u.test(printable) && (printable !== "0" || countDigits.length > 0)) {
-				countDigits = String(Math.min(MAX_COUNT, Number.parseInt(`${countDigits}${printable}`, 10)));
-				ctx.ui.setStatus(STATUS_KEY, status());
-				return { consume: true };
-			}
-			if (!action) {
-				countDigits = "";
-				ctx.ui.setStatus(STATUS_KEY, status());
-				return { consume: true };
-			}
-			const count = countDigits ? Math.min(MAX_COUNT, Number.parseInt(countDigits, 10)) : 1;
-			countDigits = "";
-			handleAction(action, count);
-			if (modeActive && !pendingChar) ctx.ui.setStatus(STATUS_KEY, status());
-			return { consume: true };
-		};
-		activeInput = handleModalInput;
-		reinstallModalInput = () => {
-			if (!modeActive || disposed || removeViewportInput || removeFallbackInput) return;
-			removeViewportInput = registry.registerViewportInputHandler({
-				id: "pi-copy-mode.active",
-				priority: 1_000,
-				handle(data) {
-					const result = handleModalInput(data);
-					if (result?.consume) {
-						suppressFallbackData = data;
-						queueMicrotask(() => {
-							if (suppressFallbackData === data) suppressFallbackData = undefined;
-						});
-					}
-					return result;
-				},
-			});
-			removeFallbackInput = ctx.ui.onTerminalInput((data) => {
-				if (suppressFallbackData === data) {
-					suppressFallbackData = undefined;
-					return { consume: true };
-				}
-				return handleModalInput(data);
-			});
-		};
-		reinstallModalInput();
+		installModalInput();
 		return true;
 	}
 
-	removeSelectionModeInput = registry.registerViewportInputHandler({
+	function handleModalInput(data: string): { consume: true } | undefined {
+		if (!modeActive || isKeyRelease(data) || tui.hasOverlay()) return undefined;
+		processModalInput(data);
+		if (modeActive) ctx.ui.setStatus(STATUS_KEY, status());
+		return { consume: true };
+	}
+
+	function processModalInput(data: string): void {
+		// Some terminal/input bridges deliver a short printable sequence as one
+		// chunk. Preserve Vim fold chords in that case instead of treating `zc`
+		// as an unknown printable command.
+		const foldPrefix =
+			data.length === 2 ? bindings["copy-mode.foldPrefix"]?.find((key) => matchesKey(data[0]!, key)) : undefined;
+		if (
+			!pendingFoldPrefix &&
+			foldPrefix &&
+			data.length === 2 &&
+			/^[\x20-\x7e]{2}$/u.test(data) &&
+			matchesKey(data[0]!, foldPrefix)
+		) {
+			pendingFoldPrefix = true;
+			processModalInput(data[1]!);
+			return;
+		}
+		const action = matchesKey(data, "ctrl+[")
+			? matchCopyModeAction("\x1b", bindings)
+			: matchCopyModeAction(data, bindings);
+		if (pendingFoldPrefix) {
+			pendingFoldPrefix = false;
+			const foldAction = FOLD_ACTIONS.find((candidate) => bindings[candidate]?.some((key) => matchesKey(data, key)));
+			if (foldAction) handleAction(foldAction);
+			return;
+		}
+		if (action === "copy-mode.foldPrefix") {
+			pendingFoldPrefix = true;
+			return;
+		}
+		if (action && FOLD_ACTIONS.some((candidate) => candidate === action)) {
+			// Fold suffixes are scoped to the configured prefix. They are not
+			// package-owned standalone shortcuts.
+			countDigits = "";
+			return;
+		}
+		if (action === "copy-mode.clearSelection" && (pendingChar || countDigits)) {
+			pendingChar = undefined;
+			countDigits = "";
+			return;
+		}
+		const decoded = decodeKittyPrintable(data);
+		const printable = decoded ?? (/^[^\x00-\x1f\x7f]+$/u.test(data) ? data : undefined);
+		if (pendingChar && printable) {
+			const pending = pendingChar;
+			pendingChar = undefined;
+			const activeSurface = surface();
+			const target = [...TARGET_SEGMENTER.segment(printable)][0]?.segment;
+			if (activeSurface && target) executeCharMotion(activeSurface, pending.motion, target, pending.count, false);
+			return;
+		}
+		if (pendingChar) {
+			pendingChar = undefined;
+			countDigits = "";
+			return;
+		}
+		if (printable && /^\d$/u.test(printable) && (printable !== "0" || countDigits.length > 0)) {
+			countDigits = String(Math.min(MAX_COUNT, Number.parseInt(`${countDigits}${printable}`, 10)));
+			return;
+		}
+		if (!action) {
+			countDigits = "";
+			return;
+		}
+		const count = countDigits ? Math.min(MAX_COUNT, Number.parseInt(countDigits, 10)) : 1;
+		countDigits = "";
+		handleAction(action, count);
+	}
+
+	function installModalInput(): void {
+		if (!modeActive || disposed || removeViewportInput || removeFallbackInput) return;
+		removeViewportInput = registry.registerViewportInputHandler({
+			id: "pi-copy-mode.active",
+			priority: 1_000,
+			handle(data) {
+				const result = handleModalInput(data);
+				if (result?.consume) {
+					suppressFallbackData = data;
+					queueMicrotask(() => {
+						if (suppressFallbackData === data) suppressFallbackData = undefined;
+					});
+				}
+				return result;
+			},
+		});
+		removeFallbackInput = ctx.ui.onTerminalInput((data) => {
+			if (suppressFallbackData === data) {
+				suppressFallbackData = undefined;
+				return { consume: true };
+			}
+			return handleModalInput(data);
+		});
+	}
+
+	const removeSelectionModeInput = registry.registerViewportInputHandler({
 		id: "pi-copy-mode.selection-mode",
 		priority: 1_100,
 		handle(data) {
@@ -993,7 +744,7 @@ export function createCopyModeHost(tui: TUI, ctx: ExtensionContext, options: Cop
 			selectionMode = false;
 			if (!enter(true)) return undefined;
 			if (selectionActions.has(action)) exitAfterInteraction = true;
-			return activeInput?.(data);
+			return handleModalInput(data);
 		},
 	});
 
@@ -1008,8 +759,7 @@ export function createCopyModeHost(tui: TUI, ctx: ExtensionContext, options: Cop
 			if (disposed) return;
 			disposed = true;
 			exit(true);
-			removeSelectionModeInput?.();
-			removeSelectionModeInput = undefined;
+			removeSelectionModeInput();
 			actionBar.dispose();
 			feedbackPill.dispose();
 			removeFeedbackDecorator();

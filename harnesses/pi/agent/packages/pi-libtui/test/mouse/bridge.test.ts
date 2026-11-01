@@ -10,6 +10,8 @@ import {
 } from "@earendil-works/pi-tui";
 import { tuiTheme } from "../../src/color/theme.ts";
 import { ComponentStack } from "../../src/component-stack.ts";
+import { DialogButtonBar } from "../../src/controls/dialog-button-bar.ts";
+import { TabBar } from "../../src/controls/tab.ts";
 import { parseUnifiedDiff, UnifiedDiffView } from "../../src/diff/index.ts";
 import {
 	installAllMotionTracking,
@@ -718,7 +720,7 @@ describe("mouse bridge", () => {
 		const rendersBeforeFocusOut = tui.renders;
 		expect(input(tui, "\x1b[O")).toEqual({ data: "native:\x1b[O" });
 
-		expect(component.events.map((event) => event.type)).toEqual(["enter", "press", "release", "leave"]);
+		expect(component.events.map((event) => event.type)).toEqual(["enter", "press", "leave"]);
 		expect(tui.renders).toBeGreaterThan(rendersBeforeFocusOut);
 		dispose();
 	});
@@ -739,7 +741,7 @@ describe("mouse bridge", () => {
 		const rendersBeforeFocusOut = tui.renders;
 		input(tui, "\x1b[O");
 
-		expect(events).toEqual(["press", "release"]);
+		expect(events).toEqual(["press", "leave"]);
 		expect(region.getMode()).toBe("preview");
 		expect(tui.renders).toBeGreaterThan(rendersBeforeFocusOut);
 		dispose();
@@ -1088,7 +1090,7 @@ describe("mouse bridge", () => {
 		input(tui, "\x1b[<0;2;1M");
 		dispose();
 
-		expect(component.events.map((event) => event.type)).toEqual(["enter", "press", "release", "leave"]);
+		expect(component.events.map((event) => event.type)).toEqual(["enter", "press", "leave"]);
 	});
 
 	test("bubbles hover past an innermost target that declines it", () => {
@@ -1186,7 +1188,14 @@ describe("mouse bridge", () => {
 			return Reflect.apply(bridge, this, [data]);
 		};
 		prototype.handleViewportInput = wrapper;
+		input(tui, "\x1b[<35;2;1M");
+		input(tui, "\x1b[<0;2;1M");
 		firstDispose();
+		expect(component.events.map((event) => event.type)).toEqual(["enter", "press", "leave"]);
+		component.events.length = 0;
+		input(tui, "\x1b[<0;2;1M");
+		expect(component.events).toHaveLength(0);
+		expect(tui.nativeInputs).toContain("\x1b[<0;2;1M");
 
 		const secondDispose = installMouseBridge(asTui(tui), registry());
 		expect(prototype.handleViewportInput).toBe(wrapper);
@@ -1403,4 +1412,78 @@ describe("expanded transcript scrolling", () => {
 			outer.dispose();
 		}
 	});
+});
+
+test.each([
+	["focus-out", false],
+	["focus-out", true],
+	["dispose", false],
+	["dispose", true],
+] as const)("%s cancels a pressed action without activating it (stack: %j)", (action, nested) => {
+	const activated: string[] = [];
+	const buttons = new DialogButtonBar({
+		theme,
+		buttons: [
+			{ value: "delete", label: "Delete", align: "start", foreground: "text.primary", background: "surface.editor" },
+		],
+		requestRender() {},
+		onActivate: (value) => activated.push(value),
+	});
+	const component = nested ? new ComponentStack([buttons]) : buttons;
+	component.render(20);
+	const tui = createTui(box(component, [], 0, 0, 20, 1));
+	const dispose = installMouseBridge(asTui(tui), registry());
+	try {
+		input(tui, "\x1b[<0;2;1M");
+		if (action === "focus-out") input(tui, "\x1b[O");
+		else dispose();
+		expect(activated).toEqual([]);
+		if (action === "focus-out") {
+			input(tui, "\x1b[<0;2;1m");
+			expect(activated).toEqual([]);
+			input(tui, "\x1b[<0;2;1M");
+			input(tui, "\x1b[<0;2;1m");
+			expect(activated).toEqual(["delete"]);
+		}
+	} finally {
+		dispose();
+	}
+});
+
+test.each([false, true])("unowned releases do not close a tab (cancelled press: %j)", (cancelled) => {
+	const closed: string[] = [];
+	const tabs = new TabBar([{ id: "side", label: "Side" }], theme);
+	tabs.onClose = (tab) => closed.push(tab.id);
+	tabs.render(20);
+	const tui = createTui(box(tabs, [], 0, 0, 20, 1));
+	const dispose = installMouseBridge(asTui(tui), registry());
+	try {
+		if (cancelled) {
+			input(tui, "\x1b[<0;7;1M");
+			input(tui, "\x1b[O");
+		}
+		input(tui, "\x1b[<0;7;1m");
+		expect(closed).toEqual([]);
+		input(tui, "\x1b[<0;7;1M");
+		input(tui, "\x1b[<0;7;1m");
+		expect(closed).toEqual(["side"]);
+	} finally {
+		dispose();
+	}
+});
+
+test("focus-out clears the button and prevents unowned drags from reaching controls", () => {
+	const component = new TestComponent(() => true);
+	const tui = createTui(box(component, [], 0, 0, 20, 1));
+	const dispose = installMouseBridge(asTui(tui), registry());
+	try {
+		input(tui, "\x1b[<0;2;1M");
+		input(tui, "\x1b[O");
+		expect(component.events.at(-1)).toMatchObject({ type: "leave", button: undefined });
+		input(tui, "\x1b[<32;3;1M");
+		input(tui, "\x1b[<0;3;1m");
+		expect(component.events.map((event) => event.type)).toEqual(["press", "leave"]);
+	} finally {
+		dispose();
+	}
 });

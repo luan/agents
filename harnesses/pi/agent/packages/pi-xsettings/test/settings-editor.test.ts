@@ -72,6 +72,44 @@ describe("xsettings editor", () => {
 		expect(rendered).toContain("Second");
 	});
 
+	test("retains selection across field refreshes and edits the refreshed value", () => {
+		initializeTui();
+		const field = (id: string, value: boolean): SettingField => ({
+			id,
+			label: id,
+			description: id,
+			type: "boolean",
+			value,
+			defaultValue: false,
+			configured: true,
+		});
+		const changes: Array<[string, SettingValue]> = [];
+		const resets: string[] = [];
+		const editor = new SettingsEditor(
+			[field("first", false), field("second", false)],
+			theme,
+			(id, value) => changes.push([id, value]),
+			(id) => resets.push(id),
+			() => {},
+		);
+		try {
+			expect(editor.selectField("second")).toBe(true);
+			editor.setFields([field("second", true), field("first", false)]);
+			expect(editor.getSelectedFieldId()).toBe("second");
+			editor.handleInput(" ");
+			expect(changes).toEqual([["second", false]]);
+			editor.resetSelected();
+			editor.resetSelected();
+			expect(resets).toEqual(["second"]);
+			editor.setFields([field("first", false)]);
+			expect(editor.getSelectedFieldId()).toBe("first");
+			editor.setFields([]);
+			expect(editor.getSelectedFieldId()).toBeUndefined();
+		} finally {
+			editor.dispose();
+		}
+	});
+
 	test("colors enum values and picker labels from option metadata", () => {
 		initializeTui();
 		const color = { hue: "cyan", shade: 3 } as const;
@@ -941,9 +979,19 @@ describe("xsettings editor", () => {
 		expect(resetLine).toContain(semantic.fgAnsi("text.secondary"));
 	});
 
-	test("edits an ordered structured list with xsettings-owned inline UI", () => {
+	test.each([false, true])("edits and disposes a structured list (hosted: %s)", (hosted) => {
 		initializeTui();
 		const changes: SettingValue[] = [];
+		const dialogs: Component[] = [];
+		const closed: number[] = [];
+		const dialogHost: DialogHost = {
+			open(component) {
+				dialogs.push(component);
+				return () => {
+					closed.push(dialogs.indexOf(component));
+				};
+			},
+		};
 		const editor = new SettingsEditor(
 			[
 				{
@@ -971,15 +1019,28 @@ describe("xsettings editor", () => {
 			(_id, value) => changes.push(value),
 			() => {},
 			() => {},
+			18,
+			[],
+			undefined,
+			hosted ? dialogHost : undefined,
 		);
 
 		expect(stripTerminalSequences(editor.render(80).join("\n"))).toContain("2 roles");
 		editor.handleInput("\r");
-		const inline = stripTerminalSequences(editor.render(80).join("\n"));
+		const inline = stripTerminalSequences((dialogs.at(-1) ?? editor).render(80).join("\n"));
 		expect(inline).toContain("Configure roles.");
 		editor.handleInput("j");
 		editor.handleInput("\x0b");
 		editor.handleInput("\x13");
+		expect(changes).toEqual([[{ name: "b" }, { name: "a" }]]);
+		editor.handleInput("\r");
+		editor.handleInput("\r");
+		editor.handleInput("\r");
+		if (hosted) expect(dialogs).toHaveLength(3);
+		editor.handleInput("unsaved");
+		editor.dispose();
+		editor.dispose();
+		expect(closed).toEqual(hosted ? [0, 2, 1] : []);
 		expect(changes).toEqual([[{ name: "b" }, { name: "a" }]]);
 	});
 });

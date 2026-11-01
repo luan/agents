@@ -51,7 +51,7 @@ test.each([12, 20, 40, 80])("wrapped Unicode cells preserve text and inline styl
 	}
 	expect(lines.join("\n")).toContain("\x1b[1m");
 	expect(lines.join("\n")).toContain(tuiTheme(theme).fgAnsi("warning"));
-	expect(lines.join("\n")).toContain("https://example.com");
+	expect(text.replace(/\s/gu, "")).toContain("https://example.com");
 });
 
 test.each([1, 2, 3, 4, 5])("narrow tables retain Pi's readable fallback at %i columns", (width) => {

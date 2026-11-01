@@ -164,10 +164,11 @@ export class SelectableList<Item> implements Component {
 		if (event.type === "press" && event.button === 0) {
 			this.pressedIndex = item?.index;
 			if (item) this.select(item.index, true);
-		} else if (event.type === "release" && event.button === 0) {
+		} else if (event.type === "release") {
 			const pressed = this.pressedIndex;
 			this.pressedIndex = undefined;
-			if (item && pressed === item.index && this.config.activateOnClick !== false) this.activate(item.index);
+			if (event.button === 0 && item && pressed === item.index && this.config.activateOnClick !== false)
+				this.activate(item.index);
 		}
 		return item !== undefined;
 	}

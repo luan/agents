@@ -3,6 +3,7 @@ import type { TerminalBridgeClient } from "@luan.sh/pi-libtui";
 import {
 	createExecSessionManager,
 	type ExecProcessSnapshot,
+	type ExecSessionManager,
 	type ExecSessionManagerOptions,
 	type ExecSessionRuntime,
 } from "../src/session-manager.ts";
@@ -47,6 +48,151 @@ class ManualRuntime implements ExecSessionRuntime {
 		this.time = target;
 	}
 }
+
+class ControlledBridge implements TerminalBridgeClient {
+	readonly operations: string[] = [];
+	readonly reaping = Promise.withResolvers<void>();
+	readonly reap = Promise.withResolvers<{ removed: boolean }>();
+	private sequence = 0;
+	private read = Promise.withResolvers<{
+		chunks: { seq: number; stream: "stdout"; chunk: string }[];
+		nextSeq: number;
+		exited: boolean;
+		closed: boolean;
+		exitCode?: number;
+	}>();
+	private reading = Promise.withResolvers<void>();
+
+	async request<T>(request: Parameters<TerminalBridgeClient["request"]>[0]): Promise<T> {
+		const op = String(request["op"]);
+		this.operations.push(op);
+		if (op === "read") {
+			this.reading.resolve();
+			return this.read.promise as Promise<T>;
+		}
+		if (op === "write") return { status: "accepted" } as T;
+		if (op === "reap") {
+			this.reaping.resolve();
+			return this.reap.promise as Promise<T>;
+		}
+		return { running: true } as T;
+	}
+
+	async output(text: string): Promise<void> {
+		await this.reading.promise;
+		const pending = this.read;
+		this.read = Promise.withResolvers();
+		this.reading = Promise.withResolvers();
+		this.sequence += 1;
+		pending.resolve({
+			chunks: [{ seq: this.sequence, stream: "stdout", chunk: Buffer.from(text).toString("base64") }],
+			nextSeq: this.sequence + 1,
+			exited: false,
+			closed: false,
+		});
+		await this.reading.promise;
+	}
+
+	async finish(): Promise<void> {
+		await this.reading.promise;
+		this.read.resolve({ chunks: [], nextSeq: this.sequence + 1, exited: true, closed: true, exitCode: 0 });
+		await this.reaping.promise;
+	}
+
+	async shutdown(): Promise<void> {}
+}
+
+async function exited(manager: ExecSessionManager, id: number): Promise<void> {
+	const finished = Promise.withResolvers<void>();
+	const unsubscribe = manager.subscribeProcesses?.((snapshots) => {
+		if (snapshots.some((snapshot) => snapshot.id === id && snapshot.state === "exited")) finished.resolve();
+	});
+	await finished.promise;
+	unsubscribe?.();
+}
+
+test("a session remains running until native reaping succeeds or fails", async () => {
+	const runtime = new ManualRuntime();
+	const bridge = new ControlledBridge();
+	const manager = createManager({ bridge, maxExecYieldTimeMs: 1, minEmptyWriteYieldTimeMs: 250 }, runtime);
+	const starting = manager.exec({ cmd: "short" }, "/tmp");
+	await bridge.output("done");
+	runtime.advance(1);
+	await starting;
+	await bridge.finish();
+	const polling = manager.write({ session_id: 1, yield_time_ms: 250 });
+	runtime.advance(250);
+	expect((await polling).session_id).toBe(1);
+	bridge.reap.resolve({ removed: false });
+	await exited(manager, 1);
+	const failed = await manager.write({ session_id: 1 });
+	expect(failed.exit_code).toBe(1);
+	expect(failed.output).toContain("native process was not reaped");
+	await manager.shutdown();
+});
+
+test("completed unpolled processes obey replay retention and release active slots", async () => {
+	const runtime = new ManualRuntime();
+	let current = new ControlledBridge();
+	const bridge: TerminalBridgeClient = {
+		request: (request) => current.request(request),
+		shutdown: async () => {},
+	};
+	const manager = createManager({ bridge, maxExecYieldTimeMs: 1 }, runtime);
+	for (let id = 1; id <= 65; id += 1) {
+		current = new ControlledBridge();
+		const starting = manager.exec({ cmd: `short-${id}` }, "/tmp");
+		await current.output(`output-${id}`);
+		runtime.advance(1);
+		expect((await starting).session_id).toBe(id);
+		await current.finish();
+		current.reap.resolve({ removed: true });
+		await exited(manager, id);
+	}
+	expect(manager.listProcesses?.()).toHaveLength(32);
+	await expect(manager.write({ session_id: 33 })).rejects.toThrow("Unknown session id 33");
+	expect((await manager.write({ session_id: 34 })).output).toBe("output-34");
+	await manager.shutdown();
+});
+
+test("polling includes output produced between calls without repeating delivered output", async () => {
+	const runtime = new ManualRuntime();
+	const bridge = new ControlledBridge();
+	const manager = createManager({ bridge, maxExecYieldTimeMs: 1, minEmptyWriteYieldTimeMs: 250 }, runtime);
+	const starting = manager.exec({ cmd: "stream" }, "/tmp");
+	await bridge.output("first");
+	runtime.advance(1);
+	expect((await starting).output).toBe("first");
+
+	await bridge.output("between");
+	const polling = manager.write({ session_id: 1, yield_time_ms: 250 });
+	await bridge.output("during");
+	runtime.advance(250);
+	expect((await polling).output).toBe("betweenduring");
+
+	const emptyPoll = manager.write({ session_id: 1, yield_time_ms: 250 });
+	runtime.advance(500);
+	expect((await emptyPoll).output).toBe("");
+	await manager.shutdown();
+});
+
+test.each(["", "input"])("aborting write_stdin with chars %j terminates its process", async (chars) => {
+	const runtime = new ManualRuntime();
+	const bridge = new ControlledBridge();
+	const manager = createManager({ bridge, maxExecYieldTimeMs: 1 }, runtime);
+	const starting = manager.exec({ cmd: "interactive", tty: true }, "/tmp");
+	await bridge.output("ready");
+	runtime.advance(1);
+	await starting;
+	const controller = new AbortController();
+	const writing = manager.write({ session_id: 1, chars }, controller.signal);
+	await Promise.resolve();
+	controller.abort();
+	await expect(writing).rejects.toThrow("write_stdin aborted");
+	expect(bridge.operations).toContain("discard");
+	await expect(manager.write({ session_id: 1 })).rejects.toThrow("Unknown session id 1");
+	await manager.shutdown();
+});
 
 test("session output preserves UTF-8 characters split across bridge chunks", async () => {
 	let reads = 0;
@@ -147,10 +293,17 @@ test("publishes output when a process finishes before the waiter subscribes", as
 	await manager.shutdown();
 });
 
-test("fails a session instead of accepting output after a sequence gap", async () => {
+test.each(["sequence gap", "read failure"])("discards native ownership after %s", async (failure) => {
+	const operations: string[] = [];
 	const bridge: TerminalBridgeClient = {
-		async request<T>(request: Record<string, unknown>): Promise<T> {
+		async request<T>(request: Parameters<TerminalBridgeClient["request"]>[0]): Promise<T> {
+			operations.push(String(request["op"]));
 			if (request["op"] === "exec") return { processId: "test" } as T;
+			if (request["op"] === "discard") {
+				if (failure === "read failure") throw new Error("bridge unavailable");
+				return { removed: true } as T;
+			}
+			if (failure === "read failure") throw new Error("read failed");
 			return {
 				chunks: [{ seq: 2, stream: "stdout", chunk: Buffer.from("missing-prefix").toString("base64") }],
 				nextSeq: 3,
@@ -165,8 +318,9 @@ test("fails a session instead of accepting output after a sequence gap", async (
 	const result = await manager.exec({ cmd: "gap", shell: "/bin/sh", login: false }, "/tmp");
 
 	expect(result.exit_code).toBe(1);
-	expect(result.output).toContain("invalid read result");
+	expect(result.output).toContain(failure === "sequence gap" ? "invalid read result" : "read failed");
 	expect(result.output).not.toContain("missing-prefix");
+	expect(operations).toEqual(["exec", "read", "discard"]);
 	await manager.shutdown();
 });
 
@@ -364,11 +518,12 @@ test("an abort racing process creation terminates the spawned command", async ()
 				});
 				return { processId: request["process_id"] } as T;
 			}
-			if (request["op"] === "terminate") {
+			if (request["op"] === "discard") {
 				terminated += 1;
 				return { terminated: true } as T;
 			}
-			return { chunks: [], nextSeq: 1, exited: false, closed: false } as T;
+			if (request["op"] === "reap") return { removed: true } as T;
+			return { chunks: [], nextSeq: 1, exited: terminated > 0, closed: terminated > 0, exitCode: 143 } as T;
 		},
 		async shutdown() {},
 	};
@@ -433,6 +588,7 @@ test("write aborts without waiting for a blocked native stdin request", async ()
 		async request<T>(request: Record<string, unknown>): Promise<T> {
 			if (request["op"] === "exec") return { processId: "test" } as T;
 			if (request["op"] === "write") return writeGate.promise as Promise<T>;
+			if (request["op"] === "discard") return { running: true } as T;
 			return new Promise<T>(() => undefined);
 		},
 		async shutdown() {},

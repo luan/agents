@@ -111,6 +111,21 @@ describe("SelectableList", () => {
 		expect(activations).toEqual(["Beta"]);
 	});
 
+	test.each([undefined, 1, 2] as const)("a release with button %s cancels the captured press", (button) => {
+		const activations: string[] = [];
+		const list = new SelectableList({
+			items: ["Alpha"],
+			renderItem: (item) => item,
+			requestRender() {},
+			onActivate: (item) => activations.push(item),
+		});
+		list.render(20);
+		list.onMouse(event({ type: "press", row: 0, col: 2, button: 0 }));
+		list.onMouse(event({ type: "release", row: 0, col: 2, button }));
+		list.onMouse(event({ type: "release", row: 0, col: 2, button: 0 }));
+		expect(activations).toEqual([]);
+	});
+
 	test("can make pointer clicks select-only while Enter still activates", () => {
 		const changes: string[] = [];
 		const activations: string[] = [];

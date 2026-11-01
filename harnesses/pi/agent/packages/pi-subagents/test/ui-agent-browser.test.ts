@@ -17,6 +17,7 @@ initTheme("dark", false);
 
 test("agent transcripts use the child session's tool renderer and retain it across host invalidation", () => {
 	let resolutions = 0;
+	let appearance = "original";
 	const definition = {
 		name: "custom_tool",
 		label: "Custom Tool",
@@ -25,7 +26,7 @@ test("agent transcripts use the child session's tool renderer and retain it acro
 		execute: async () => ({ content: [], details: undefined }),
 		renderShell: "self",
 		renderCall: () => new Text("actual call renderer"),
-		renderResult: () => new Text("actual result renderer"),
+		renderResult: () => new Text(`actual result renderer: ${appearance}`),
 	} satisfies ToolDefinition;
 	const messages = toolMessages();
 	const transcript = {
@@ -53,11 +54,12 @@ test("agent transcripts use the child session's tool renderer and retain it acro
 	);
 
 	const first = stripTerminalSequences(hub.render(90).join("\n"));
+	appearance = "updated";
 	hub.invalidate();
 	const second = stripTerminalSequences(hub.render(90).join("\n"));
 	expect(first).toContain("actual call renderer");
-	expect(first).toContain("actual result renderer");
-	expect(second).toContain("actual result renderer");
+	expect(first).toContain("actual result renderer: original");
+	expect(second).toContain("actual result renderer: updated");
 	expect(resolutions).toBe(1);
 	hub.dispose();
 });

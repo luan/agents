@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -192,7 +192,7 @@ test("rejects thinking levels unsupported by the selected model", async () => {
 	).rejects.toThrow('Thinking level "high" is unavailable');
 });
 
-test("requires Pi 0.84's model runtime compatibility boundary", async () => {
+test("rejects an unavailable model runtime before creating session state", async () => {
 	const cwd = await mkdtemp(join(tmpdir(), "pi-subagents-runtime-"));
 	try {
 		await expect(
@@ -202,6 +202,7 @@ test("requires Pi 0.84's model runtime compatibility boundary", async () => {
 				sessionDir: join(cwd, "sessions"),
 			}),
 		).rejects.toThrow("Pi model runtime is unavailable to the subagent session");
+		expect(await readdir(cwd)).toEqual([]);
 	} finally {
 		await rm(cwd, { recursive: true, force: true });
 	}
@@ -260,6 +261,46 @@ test("resumeAgent releases subscriptions and abort forwarding when prompting fai
 	expect(listeners).toHaveLength(2);
 	expect(unsubscribeCount).toBe(2);
 	expect(abortCount).toBe(0);
+});
+
+test.each([false, true])("cancelled follow-up starts no work (collaboration: %s)", async (collaboration) => {
+	const calls: string[] = [];
+	const session = {
+		messages: [],
+		sessionManager: SessionManager.inMemory(),
+		subscribe: () => {
+			calls.push("subscribe");
+			return () => calls.push("unsubscribe");
+		},
+		prompt: async () => {
+			calls.push("prompt");
+		},
+		sendCustomMessage: async () => {
+			calls.push("task");
+		},
+		abort: async () => {
+			calls.push("abort");
+		},
+	} as never;
+	const reason = new Error("cancelled before follow-up");
+	await expect(
+		resumeAgent(session, "continue", {
+			signal: AbortSignal.abort(reason),
+			...(collaboration ? { collaboration: { agentPath: "/root/review" } } : {}),
+		}),
+	).rejects.toBe(reason);
+	expect(calls).toEqual([]);
+});
+
+test("cancelled agent starts no resource or session setup", async () => {
+	const reason = new Error("cancelled before startup");
+	await expect(
+		runAgent(context(), "delegate", {
+			pi: pi(),
+			agentConfig: {},
+			signal: AbortSignal.abort(reason),
+		}),
+	).rejects.toBe(reason);
 });
 
 test("delivers assigned work as a hidden child task", async () => {

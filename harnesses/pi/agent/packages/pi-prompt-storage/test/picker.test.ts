@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { KeybindingsManager, stripTerminalSequences, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	type TUI,
+	KeybindingsManager,
+	stripTerminalSequences,
+	TUI_KEYBINDINGS,
+} from "@earendil-works/pi-tui";
 import type { PromptItem, PromptStorageConfig } from "../src/core/model.ts";
-import { createStashPicker, openPromptPicker, type PickerResult } from "../src/ui/picker.ts";
+import { createStashPicker, openPromptPicker, type PickerResult, type PromptIndexView } from "../src/ui/picker.ts";
 
 const theme = {
 	bold: (text: string) => text,
@@ -114,5 +120,84 @@ describe("stash picker", () => {
 		});
 
 		expect(options).toEqual({ overlay: true, overlayOptions: { anchor: "bottom-left", width: "100%" } });
+	});
+});
+
+async function historyPicker(index: PromptIndexView = { progress: () => undefined, watch: () => () => {} }) {
+	const history: PromptItem[] = ["apples", "berries", "citrus"].map((text, id) => ({
+		kind: "history",
+		id,
+		text,
+		timestamp: id,
+		cwd: "/repo",
+	}));
+	const results: Array<PickerResult | null> = [];
+	let panel: (Component & { dispose?(): void }) | undefined;
+	type Factory = (
+		tui: TUI,
+		theme: Theme,
+		keys: KeybindingsManager,
+		done: (result: PickerResult | null) => void,
+	) => NonNullable<typeof panel>;
+	const ctx = {
+		cwd: "/repo",
+		ui: {
+			custom: async (factory: Factory) => {
+				panel = factory({ requestRender() {} } as TUI, theme, new KeybindingsManager(TUI_KEYBINDINGS), (result) =>
+					results.push(result),
+				);
+				return null;
+			},
+		},
+	} as never as ExtensionContext;
+	await openPromptPicker(
+		ctx,
+		"Prompt History",
+		history,
+		{ ...config, picker: { ...config.picker, maxVisible: 2 } },
+		"history",
+		index,
+	);
+	if (!panel) throw new Error("History picker was not created");
+	return { panel, results, history };
+}
+
+describe("history picker", () => {
+	test.each([
+		["down", "\x1b[B", 1],
+		["ctrl+n", "\x0e", 1],
+		["up", "\x1b[A", 2],
+		["ctrl+p", "\x10", 2],
+		["page down", "\x1b[6~", 2],
+	] as const)("%s moves to the expected prompt", async (_name, input, selected) => {
+		const { panel, results, history } = await historyPicker();
+		panel.handleInput?.(input);
+		panel.handleInput?.("\r");
+		expect(results).toEqual([{ item: history[selected], action: "apply" }]);
+	});
+
+	test("page up moves by the visible page and filtering keeps matching prompts", async () => {
+		const { panel, results, history } = await historyPicker();
+		panel.handleInput?.("\x1b[6~");
+		panel.handleInput?.("\x1b[5~");
+		panel.handleInput?.("\r");
+		expect(results).toEqual([{ item: history[0], action: "apply" }]);
+		const filtered = await historyPicker();
+		for (const character of "berries") filtered.panel.handleInput?.(character);
+		filtered.panel.handleInput?.("\r");
+		expect(filtered.results).toEqual([{ item: filtered.history[1], action: "apply" }]);
+	});
+
+	test("host disposal releases its progress subscription once", async () => {
+		let released = 0;
+		const { panel } = await historyPicker({
+			progress: () => undefined,
+			watch: () => () => {
+				released++;
+			},
+		});
+		panel.dispose?.();
+		panel.dispose?.();
+		expect(released).toBe(1);
 	});
 });
