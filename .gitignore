@@ -3,6 +3,7 @@
 /.tmp/
 node_modules/
 target/
+*.tsbuildinfo
 /site/dist/
 
 # Harness runtime state

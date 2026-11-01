@@ -209,6 +209,32 @@ fn managed_package_tree_excludes_node_modules(fixture: HarnessFixture) -> Result
 }
 
 #[rstest]
+fn package_build_metadata_stays_unmanaged(fixture: HarnessFixture) -> Result<()> {
+    fixture.write_managed(&[], &["packages"]);
+    let (package, _dependency) = fixture.package("pi-example", "runtime-dependency");
+    let source = package.join("tsconfig.tsbuildinfo");
+    fs::write(&source, "compiler metadata")?;
+    run(Operation::Setup, &fixture.repository, &fixture.home)?;
+    let target = fixture
+        .home
+        .join("target/packages/pi-example/tsconfig.tsbuildinfo");
+    assert!(!target.try_exists()?);
+
+    fs::write(&target, "runtime metadata")?;
+    run(Operation::Setup, &fixture.repository, &fixture.home)?;
+    run(Operation::Check, &fixture.repository, &fixture.home)?;
+    assert_eq!(fs::read_to_string(&target)?, "runtime metadata");
+
+    fs::remove_file(&target)?;
+    create_file_symlink(&source, &target)?;
+    assert!(run(Operation::Check, &fixture.repository, &fixture.home).is_err());
+    run(Operation::Setup, &fixture.repository, &fixture.home)?;
+    assert!(!target.try_exists()?);
+    assert_eq!(fs::read_to_string(&source)?, "compiler metadata");
+    Ok(())
+}
+
+#[rstest]
 fn managed_package_tree_excludes_development_surfaces_and_retires_old_links(
     fixture: HarnessFixture,
 ) -> Result<()> {

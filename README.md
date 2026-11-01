@@ -22,6 +22,8 @@ The harness roots remain ordinary directories: `~/.claude`, `~/.codex`, and `~/.
 
 Pi's `settings.json` is deliberately mutable. Pi may update the repository copy through its managed link. Credentials, sessions, caches, model stores, and other generated state stay local and out of Git.
 
+Package build metadata (`*.tsbuildinfo`) is excluded from harness links.
+
 To inspect or remove the links:
 
 ```sh

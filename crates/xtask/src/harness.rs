@@ -450,6 +450,15 @@ fn tree_files(
         if entry.file_name() == "node_modules" {
             continue;
         }
+        // TypeScript writes incremental metadata after setup; it is not runtime source.
+        if exclude_package_development
+            && entry
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "tsbuildinfo")
+        {
+            continue;
+        }
         let child = relative.join(entry.file_name());
         let file_type = entry
             .file_type()
