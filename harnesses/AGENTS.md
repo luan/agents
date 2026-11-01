@@ -15,6 +15,7 @@ When a step doesn't need my input, keep going. Put status notes in the same mess
 - Use temporary directories and caches for disposable files, never as the source of durable instructions. Keep issue scope and ownership in issues, and completed behavior and evidence in pull requests; do not create separate coordination journals.
 - In coordinator tasks, inspect final images when responsible for visual acceptance. Keep intermediate image payloads with feature owners; request final originals, concise findings, the reviewed source revision and evidence links.
 - Before placing a checkout, large build target, fixture tree or QA scratch, check the destination filesystem. Use disk-backed storage when the default temporary directory is RAM-backed, and measure free space where the data will live. Clean only the owned scratch root.
+- NEVER, EVER vendor dependencies unless EXPLICITLY instructed to do so.
 
 ## Coding
 
