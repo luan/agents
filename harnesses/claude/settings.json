@@ -50,8 +50,8 @@
     }
   },
   "tui": "fullscreen",
-  "autoMemoryEnabled": true,
-  "autoDreamEnabled": true,
+  "autoMemoryEnabled": false,
+  "autoDreamEnabled": false,
   "skipDangerousModePermissionPrompt": true,
   "theme": "auto",
   "editorMode": "normal",
