@@ -10,6 +10,9 @@
   "permissions": {
     "defaultMode": "bypassPermissions"
   },
+  "worktree": {
+    "baseRef": "fresh"
+  },
   "statusLine": {
     "type": "command",
     "command": "uv run $HOME/.claude/statusline.py",
@@ -28,7 +31,8 @@
     "slack@claude-plugins-official": true,
     "datadog@claude-plugins-official": true,
     "sentry@claude-plugins-official": true,
-    "figma@claude-plugins-official": true
+    "figma@claude-plugins-official": true,
+    "github@anthropic-plugin-directory": true
   },
   "feedbackDrafts": "notify",
   "modelSettings": {
@@ -38,10 +42,22 @@
   },
   "askUserQuestionTimeout": "never",
   "dialogExpiry": "never",
+  "pluginConfigs": {
+    "cc-plugin-agents-md@builtin": {
+      "options": {
+        "instructionFiles": "claude-md-or-agents-md"
+      }
+    }
+  },
   "tui": "fullscreen",
   "autoMemoryEnabled": true,
   "autoDreamEnabled": true,
   "skipDangerousModePermissionPrompt": true,
   "theme": "auto",
-  "switchModelsOnFlag": false
+  "editorMode": "normal",
+  "preferredNotifChannel": "auto",
+  "idleCompaction": true,
+  "switchModelsOnFlag": false,
+  "inputNeededNotifEnabled": false,
+  "outputStyle": "Proactive"
 }
