@@ -26,7 +26,7 @@
     "@luan.sh/pi-xsettings": "workspace:*",
     "@luan.sh/pi-libactions": "workspace:*",
     "ws": "^8.21.3",
-    "undici": "8.10.0",
+    "undici": "8.10.2",
     "proxy-from-env": "2.1.0",
     "https-proxy-agent": "^7.0.6",
     "selfsigned": "^5.5.0",
