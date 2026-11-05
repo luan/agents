@@ -2,9 +2,10 @@
 name = "claude"
 source = "harnesses/claude"
 target = ".claude"
-links = ["CLAUDE.md", "settings.json", "statusline.py"]
+links = ["CLAUDE.md", "statusline.py"]
 trees = []
-seeds = []
+# Apps and Claude Code rewrite settings.json, so it is a local file seeded from this one.
+seeds = [{ source = "settings.json", target = "settings.json" }]
 
 [[harnesses]]
 name = "codex"
@@ -25,9 +26,9 @@ links = [
   "agent/AGENTS.md",
   "agent/SYSTEM.md",
   "agent/keybindings.json",
-  "agent/settings.json",
   "agent/xsettings.toml",
 ]
 trees = ["agent/packages", "agent/themes"]
 package_trees = ["agent/packages"]
-seeds = []
+# Pi rewrites agent/settings.json, so it is a local file seeded from this one.
+seeds = [{ source = "agent/settings.json", target = "agent/settings.json" }]

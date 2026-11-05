@@ -20,7 +20,7 @@ just setup
 
 The harness roots remain ordinary directories: `~/.claude`, `~/.codex`, and `~/.pi` are never replaced with symlinks. The setup tool links only the paths listed in `managed.toml`, using the checkout it runs from. Setup automatically repairs conflicting file and dependency links. Before replacing an occupied target, it moves the original file, directory, or symlink into `~/.agents-harness-backups/<target path>/<revision>/original` and prints its location. Existing backups are never overwritten. Move an original back to its target path to restore it; relative symlinks retain their original link text for that restoration. Setup still refuses to traverse symlinked runtime directories.
 
-Pi's `settings.json` is deliberately mutable. Pi may update the repository copy through its managed link. Credentials, sessions, caches, model stores, and other generated state stay local and out of Git.
+Claude Code's and Pi's `settings.json` are seeds, not links: apps and the harnesses rewrite them, so setup copies the repository version once and the local file stays out of Git. A machine manager can merge later repository changes into it. Credentials, sessions, caches, model stores, and other generated state stay local and out of Git.
 
 Package build metadata (`*.tsbuildinfo`) is excluded from harness links.
 
