@@ -45,6 +45,19 @@ When a step doesn't need my input, keep going. Put status notes in the same mess
 4. An **empathetic signature** asks only for what the function needs, exposes _useful results_, and communicates _important invariants through types_.
 5. Keep every line at the same level of abstraction. Zooming into one step requires another function.
 
+## Engineering decisions
+
+1. Name the state, its owner, and its allowed transitions before adding stateful logic. Derive types from the authoritative schema. Parse external data at its boundary; rely on validated internal invariants rather than repeating guards or trusting unchecked casts.
+2. Reduce the layers a reader must follow and the mutable state they must remember. Keep domain decisions together; remove pass-through wrappers and synchronized copies that do not earn their cost.
+3. For a consequential design with genuinely different options, compare small usage sketches or cheap prototypes. Repeated workarounds are evidence to reconsider the design around the new requirement. Preserve the project's vocabulary. Parallel exploration needs the user's or active workflow's delegation authorization.
+4. Make retryable commands and lifecycle operations reconcile actual state with the desired state. Check repeated execution and interrupted execution; leave enough evidence to recognize stale artifacts safely.
+5. In a scoped internal migration, move callers to the intended contract and remove the obsolete API when no external consumer requires it. Planned intermediate breakage must be explicit and reversible, with checks at phase boundaries and complete validation before handoff.
+6. Reuse existing commands and harnesses to perform or prove the work. Add the smallest rerunnable tool only when it improves repeatability or verification. Verify the real output or user path, and distinguish observed results from source inspection and remaining gaps.
+7. Before acting on a measured number, establish what decision it informs. Check that the intended work happened correctly, account for failures, use comparable configurations, and distinguish variation from an effect. Explain the limiter and end-to-end relevance when claiming a performance improvement.
+8. When a correction recurs, prefer fixing architecture, types, lint, or tests over adding another instruction. Prove that the guard catches the actual mistake. Keep written rules for choices that need judgment.
+9. While iterating, run the lint gate CI enforces on the code you changed, not just a compile or type check.
+10. Judge a design by the experience of its users, callers, and next maintainer. Prefer a smaller polished interaction over extra controls or options that serve only implementation convenience.
+
 ## Rust
 
 ### Toolchain ownership and compatibility
