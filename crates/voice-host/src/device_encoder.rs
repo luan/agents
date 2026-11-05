@@ -1,14 +1,14 @@
 use crate::audio::AudioFrames;
 use crate::codex_audio::processing::{MAX_PROCESSING_DELAY, PROCESSING_LATE, Processor};
 use crate::protocol::Event;
+use crate::v3_media::AudioSender;
 use bytes::Bytes;
+use rtc::media::Sample;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use webrtc::media::Sample;
-use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 
 pub struct DeviceAudio {
     pub capture: AudioFrames,
@@ -18,7 +18,7 @@ pub struct DeviceAudio {
 }
 
 pub fn spawn(
-    track: Arc<TrackLocalStaticSample>,
+    track: Arc<AudioSender>,
     device: DeviceAudio,
     enabled: Arc<AtomicBool>,
     events: mpsc::Sender<Event>,
@@ -31,7 +31,7 @@ pub fn spawn(
 }
 
 async fn encode(
-    track: Arc<TrackLocalStaticSample>,
+    track: Arc<AudioSender>,
     device: DeviceAudio,
     enabled: Arc<AtomicBool>,
 ) -> Result<(), String> {
@@ -112,7 +112,10 @@ async fn encode(
             track.write_sample(&Sample {
                 data: Bytes::from(packet.data),
                 duration: Duration::from_millis(20),
-                ..Default::default()
+                timestamp: packet.at,
+                packet_timestamp: 0,
+                prev_dropped_packets: 0,
+                prev_padding_packets: 0,
             }),
         )
         .await
