@@ -54,6 +54,24 @@
     },
     {
       "path": "harnesses/pi/agent/packages/pi-token-burden"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-custom-editor"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-panels"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-prompt-storage"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-side"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-subagents"
+    },
+    {
+      "path": "harnesses/pi/agent/packages/pi-tuicr"
     }
   ]
 }

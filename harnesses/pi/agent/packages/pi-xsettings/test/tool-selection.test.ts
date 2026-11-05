@@ -54,86 +54,90 @@ const cases: SelectionCase[] = [
 	{ name: "empty configured selection", defaultTools: [], expected: [], reloaded: ["extra", "fixture"] },
 ];
 
-test.each(cases)("tool baseline survives startup, reload and navigation: $name", async (selection) => {
-	const root = await mkdtemp(join(tmpdir(), "pi-xsettings-selection-"));
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = root;
-	try {
-		await writeFile(
-			join(root, "settings.json"),
-			JSON.stringify({ defaultTools: selection.defaultTools, codemode: { mode: "only" } }),
-		);
-		const settingsManager = SettingsManager.create(root, root, { projectTrusted: false });
-		const modelRuntime = await ModelRuntime.create({
-			authPath: join(root, "auth.json"),
-			modelsPath: null,
-			modelsStorePath: join(root, "models.json"),
-			refreshOnCreate: false,
-		});
-		const resourceLoader = new DefaultResourceLoader({
-			cwd: root,
-			agentDir: root,
-			settingsManager,
-			noSkills: true,
-			noThemes: true,
-			noContextFiles: true,
-			noPromptTemplates: true,
-			extensionFactories: [
-				{ name: "codemode", factory: createCodemodeExtension(), builtin: true, replaceable: true },
-				xsettings,
-				(pi) => {
-					for (const name of ["fixture", "extra"]) {
-						pi.registerTool({
-							name,
-							label: name,
-							description: "Fixture tool",
-							parameters: Type.Object({}),
-							execute: async () => ({ content: [], details: {} }),
-						});
-					}
-				},
-			],
-		});
-		await resourceLoader.reload();
-		const manager = SessionManager.inMemory(root);
-		const emptyBranch = manager.appendMessage({ role: "system", content: "", toolsAdded: [], timestamp: 1 });
-		const { session } = await createAgentSession({
-			cwd: root,
-			agentDir: root,
-			settingsManager,
-			modelRuntime,
-			resourceLoader,
-			sessionManager: manager,
-			tools: selection.tools,
-			excludeTools: selection.excludeTools,
-			noTools: selection.noTools,
-		});
+test.each(cases)(
+	"tool selection respects startup constraints and native branch restoration: $name",
+	async (selection) => {
+		const root = await mkdtemp(join(tmpdir(), "pi-xsettings-selection-"));
+		const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = root;
 		try {
-			const errors: string[] = [];
-			session.setActiveToolsByName([]);
-			await session.bindExtensions({ mode: "rpc", onError: (error) => errors.push(error.error) });
-			expect(session.getActiveToolNames().sort()).toEqual(selection.expected);
-			session.setActiveToolsByName([]);
-			expect(session.getCallableToolNames()).not.toContain("fixture");
-			const messages = [...session.messages];
-			await session.reload();
-			expect(errors).toEqual([]);
-			expect(session.getActiveToolNames().sort()).toEqual(selection.reloaded);
-			expect(session.getCallableToolNames().includes("fixture")).toBe(selection.reloaded.includes("fixture"));
-			expect(session.messages).toEqual(messages);
-			await session.navigateTree(emptyBranch, { summarize: false });
-			expect(session.getActiveToolNames().sort()).toEqual(selection.expected);
-			expect(session.getCallableToolNames().includes("fixture")).toBe(selection.expected.includes("fixture"));
-			session.setActiveToolsByName(["extra"]);
-			await session.reload();
-			expect(session.getActiveToolNames().sort()).toEqual(selection.reloaded);
+			await writeFile(
+				join(root, "settings.json"),
+				JSON.stringify({ defaultTools: selection.defaultTools, codemode: { mode: "only" } }),
+			);
+			const settingsManager = SettingsManager.create(root, root, { projectTrusted: false });
+			const modelRuntime = await ModelRuntime.create({
+				authPath: join(root, "auth.json"),
+				modelsPath: null,
+				modelsStorePath: join(root, "models.json"),
+				refreshOnCreate: false,
+			});
+			const resourceLoader = new DefaultResourceLoader({
+				cwd: root,
+				agentDir: root,
+				settingsManager,
+				noSkills: true,
+				noThemes: true,
+				noContextFiles: true,
+				noPromptTemplates: true,
+				extensionFactories: [
+					{ name: "codemode", factory: createCodemodeExtension(), builtin: true, replaceable: true },
+					xsettings,
+					(pi) => {
+						for (const name of ["fixture", "extra"]) {
+							pi.registerTool({
+								name,
+								label: name,
+								description: "Fixture tool",
+								parameters: Type.Object({}),
+								execute: async () => ({ content: [], details: {} }),
+							});
+						}
+					},
+				],
+			});
+			await resourceLoader.reload();
+			const manager = SessionManager.inMemory(root);
+			const emptyBranch = manager.appendMessage({ role: "system", content: "", toolsAdded: [], timestamp: 1 });
+			const { session } = await createAgentSession({
+				cwd: root,
+				agentDir: root,
+				settingsManager,
+				modelRuntime,
+				resourceLoader,
+				sessionManager: manager,
+				tools: selection.tools,
+				excludeTools: selection.excludeTools,
+				noTools: selection.noTools,
+			});
+			try {
+				const errors: string[] = [];
+				session.setActiveToolsByName([]);
+				await session.bindExtensions({ mode: "rpc", onError: (error) => errors.push(error.error) });
+				expect(session.getActiveToolNames().sort()).toEqual(selection.expected);
+				session.setActiveToolsByName([]);
+				expect(session.getCallableToolNames()).not.toContain("fixture");
+				const messages = [...session.messages];
+				await session.reload();
+				expect(errors).toEqual([]);
+				expect(session.getActiveToolNames().sort()).toEqual(selection.reloaded);
+				expect(session.getCallableToolNames().includes("fixture")).toBe(selection.reloaded.includes("fixture"));
+				expect(session.messages).toEqual(messages);
+				await session.navigateTree(emptyBranch, { summarize: false });
+				// Pi retains defaults for extension tools absent from the recorded branch.
+				expect(session.getActiveToolNames().sort()).toEqual(selection.reloaded);
+				expect(session.getCallableToolNames().includes("fixture")).toBe(selection.reloaded.includes("fixture"));
+				session.setActiveToolsByName(["extra"]);
+				await session.reload();
+				expect(session.getActiveToolNames().sort()).toEqual(selection.reloaded);
+			} finally {
+				await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" });
+				session.dispose();
+			}
 		} finally {
-			await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" });
-			session.dispose();
+			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+			await rm(root, { recursive: true, force: true });
 		}
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(root, { recursive: true, force: true });
-	}
-});
+	},
+);

@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { compositeTuiLine, type KeyId, visibleWidth } from "@earendil-works/pi-tui";
-import { backgroundAnsiAtColumn, renderPill } from "../decoration/powerline-pill.ts";
+import { renderPill } from "../decoration/powerline-pill.ts";
+import { backgroundAnsiAtColumn } from "../terminal/color-compatibility.ts";
 import type { MouseRect, MouseRegistry } from "../mouse.ts";
 import { compositeHoverTooltip } from "../overlay/hover-tooltip.ts";
 

@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { hyperlink, stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { tuiTheme } from "../color/theme.ts";
+import { nativeUserMessageColors, tuiTheme } from "../color/theme.ts";
 import { type PillContent, renderPillText } from "./glyphs.ts";
 import { contrastingPillBackground, renderPill } from "./powerline-pill.ts";
 
@@ -15,15 +15,12 @@ export function renderTranscriptPill(
 	const clean = stripTerminalSequences(content.label).replace(/[\r\n\t]/g, " ");
 	const padding = visibleWidth(renderPillText({ ...content, label: "" }));
 	const label = stripTerminalSequences(truncateToWidth(clean, Math.max(1, width - padding - 1), "…"));
-	const destination = muted || options.surface === "assistant" ? "\x1b[49m" : theme.getBgAnsi("userMessageBg");
+	const native = nativeUserMessageColors(theme);
+	const destination = muted || options.surface === "assistant" ? "\x1b[49m" : native.background;
 	const colors = tuiTheme(theme);
 	const contrast = contrastingPillBackground(theme, destination);
 	const background = colors.mixForeground(colors.contrastBackground(contrast), contrast, 0.2);
-	const following = muted
-		? theme.getFgAnsi("dim")
-		: options.surface === "user"
-			? theme.getFgAnsi("userMessageText")
-			: colors.fgAnsi("text.primary");
+	const following = muted ? native.muted : options.surface === "user" ? native.text : colors.fgAnsi("text.primary");
 	// Pi wraps at ASCII spaces; keep the painted pill together.
 	const pill = renderPill(
 		theme,

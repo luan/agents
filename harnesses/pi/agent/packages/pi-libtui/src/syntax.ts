@@ -154,13 +154,22 @@ export function highlightSyntaxBlock(
 	if (!highlighter) return plainLines;
 	const language = languageForPath(path);
 	try {
-		const root = highlighter.codeToHast(text, {
+		const result = highlighter.codeToTokens(text, {
 			lang: language,
 			theme: SHIKI_THEME,
 			defaultColor: false,
 			tokenizeTimeLimit: 0,
 		});
-		const lines = syntaxSpansFromLines(root);
+		const lines = result.tokens.map((tokens) => {
+			const spans: SyntaxHighlightSpan[] = [];
+			for (const token of tokens) {
+				pushSpan(spans, {
+					text: token.content,
+					foreground: foregroundFromStyle(token.color ? `color:${token.color}` : undefined),
+				});
+			}
+			return spans;
+		});
 		while (lines.length < plainLines.length) lines.push([]);
 		return lines.slice(0, plainLines.length);
 	} catch {
@@ -200,9 +209,7 @@ function languageForPath(path: string | undefined): SupportedLanguages {
 	return supportedLanguages.has(language) ? language : "text";
 }
 
-type PierreSyntaxNode =
-	| ReturnType<DiffsHighlighter["codeToHast"]>
-	| ReturnType<DiffsHighlighter["codeToHast"]>["children"][number];
+type PierreSyntaxNode = ThemedDiffResult["code"]["additionLines"][number];
 
 function plainSyntaxLines(text: string): readonly (readonly SyntaxHighlightSpan[])[] {
 	return text.split("\n").map((line) => (line ? [{ text: line }] : []));
@@ -212,18 +219,6 @@ function syntaxSpansFromNode(node: PierreSyntaxNode): readonly SyntaxHighlightSp
 	const spans: SyntaxHighlightSpan[] = [];
 	collectSyntaxSpans(node, undefined, false, spans);
 	return spans;
-}
-
-function syntaxSpansFromLines(node: PierreSyntaxNode): SyntaxHighlightSpan[][] {
-	const lines: SyntaxHighlightSpan[][] = [[]];
-	for (const span of syntaxSpansFromNode(node)) {
-		const values = span.text.split("\n");
-		for (const [index, value] of values.entries()) {
-			pushSpan(lines.at(-1)!, { ...span, text: value });
-			if (index < values.length - 1) lines.push([]);
-		}
-	}
-	return lines;
 }
 
 function truncateSyntaxSpans(
@@ -252,7 +247,7 @@ function collectSyntaxSpans(
 		pushSpan(spans, { text: node.value, foreground, emphasized });
 		return;
 	}
-	if (node.type !== "root" && node.type !== "element") return;
+	if (node.type !== "element") return;
 	const properties = node.type === "element" ? node.properties : undefined;
 	const nextForeground =
 		foregroundFromStyle(typeof properties?.style === "string" ? properties.style : undefined) ?? foreground;

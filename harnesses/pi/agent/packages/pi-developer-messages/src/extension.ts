@@ -91,7 +91,7 @@ export function registerDeveloperPromptExtension(pi: ExtensionAPI): void {
 				api: ctx.model?.api,
 				activeTools,
 				sessionId,
-				prompt: event.prompt,
+				prompt: "prompt" in event ? event.prompt : "",
 				systemPromptOptions: event.systemPromptOptions,
 				cwd: ctx.cwd,
 				piSystemPrompt: event.systemPrompt,

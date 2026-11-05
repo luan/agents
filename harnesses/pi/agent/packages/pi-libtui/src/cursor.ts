@@ -174,7 +174,7 @@ export function removeUnmarkedEditorCursor(line: string): string {
 	// Native selection highlighting ends with INVERSE_OFF. Restrict this to
 	// the editor's one-grapheme + RESET form so selected transcript text stays
 	// untouched.
-	const match = /\x1b\[7m([^\x1b]+)\x1b\[0m/u.exec(line);
+	const match = /(?:\x1b\[7m|\x1b_pi:fc\x07)([^\x1b]+)(?:\x1b\[0m|\x1b_pi:\/fc\x07)/u.exec(line);
 	if (!match || [...graphemes.segment(stripTerminalSequences(match[1] ?? ""))].length !== 1) return line;
 	const start = match.index ?? 0;
 	return `${line.slice(0, start)}${match[1]}${line.slice(start + match[0].length)}`;
@@ -245,7 +245,7 @@ export function markEditorCursor(
 	const marker = line.indexOf(CURSOR_MARKER);
 	if (marker < 0 && renderCursor && typeof renderCursor !== "function") return removeUnmarkedEditorCursor(line);
 	const start = marker >= 0 ? marker + CURSOR_MARKER.length : 0;
-	const match = /\x1b\[7m([^\x1b]+)\x1b\[0m/u.exec(line.slice(start));
+	const match = /(?:\x1b\[7m|\x1b_pi:fc\x07)([^\x1b]+)(?:\x1b\[0m|\x1b_pi:\/fc\x07)/u.exec(line.slice(start));
 	if (!match || [...graphemes.segment(stripTerminalSequences(match[1] ?? ""))].length !== 1) return line;
 	const cursorStart = start + (match.index ?? 0);
 	const render =
@@ -271,7 +271,7 @@ export function markInputCursor(line: string, options: MarkEditorCursorOptions):
 	const marker = line.indexOf(CURSOR_MARKER);
 	if (marker < 0) return removeUnmarkedInputCursor(line);
 	const start = marker + CURSOR_MARKER.length;
-	const match = /\x1b\[7m([^\x1b]+)\x1b\[27m/u.exec(line.slice(start));
+	const match = /(?:\x1b\[7m|\x1b_pi:fc\x07)([^\x1b]+)(?:\x1b\[27m|\x1b_pi:\/fc\x07)/u.exec(line.slice(start));
 	if (!match || [...graphemes.segment(stripTerminalSequences(match[1] ?? ""))].length !== 1) return line;
 	const cursorStart = start + (match.index ?? 0);
 	const cursor = renderSemanticCursor(options.theme, stripTerminalSequences(match[1] ?? ""), options);
@@ -281,7 +281,7 @@ export function markInputCursor(line: string, options: MarkEditorCursorOptions):
 
 function removeUnmarkedInputCursor(line: string): string {
 	if (line.includes(CURSOR_MARKER)) return line;
-	const match = /\x1b\[7m([^\x1b]+)\x1b\[27m/u.exec(line);
+	const match = /(?:\x1b\[7m|\x1b_pi:fc\x07)([^\x1b]+)(?:\x1b\[27m|\x1b_pi:\/fc\x07)/u.exec(line);
 	if (!match || [...graphemes.segment(stripTerminalSequences(match[1] ?? ""))].length !== 1) return line;
 	const start = match.index ?? 0;
 	return `${line.slice(0, start)}${match[1]}${line.slice(start + match[0].length)}`;

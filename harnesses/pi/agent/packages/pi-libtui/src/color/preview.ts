@@ -1,3 +1,4 @@
+import { indexedCell } from "../terminal/color-compatibility.ts";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, type Focusable, matchesKey } from "@earendil-works/pi-tui";
 import { color256Index } from "./palette.ts";
@@ -140,18 +141,4 @@ function base16Legend(): string[] {
 function center(text: string, width: number): string {
 	const left = Math.floor((width - text.length) / 2);
 	return `${" ".repeat(left)}${text}${" ".repeat(width - left - text.length)}`;
-}
-
-function indexedCell(index: number, text: string, background: boolean): string {
-	if (!background) return `\x1b[38;5;${index}m${text}\x1b[0m`;
-	return isDark(index) ? `\x1b[48;5;${index}m${text}\x1b[0m` : `\x1b[38;5;${index};7m${text}\x1b[0m`;
-}
-
-function isDark(index: number): boolean {
-	if (index >= 16 && index <= 231) {
-		const cube = index - 16;
-		return Math.floor(cube / 36) < 4 && Math.floor(cube / 6) % 6 < 4 && cube % 6 < 4;
-	}
-	if (index >= 232) return index - 232 < 11;
-	return index % 8 === 0;
 }

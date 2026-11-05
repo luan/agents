@@ -120,6 +120,15 @@ interface CachedTheme {
 
 const themeCache = new WeakMap<Theme, CachedTheme>();
 
+/** Exact native aliases for pills composed inside Pi-owned message surfaces. */
+export function nativeUserMessageColors(theme: Theme): { background: string; text: string; muted: string } {
+	return {
+		background: theme.getBgAnsi("userMessageBg"),
+		text: theme.getFgAnsi("userMessageText"),
+		muted: theme.getFgAnsi("dim"),
+	};
+}
+
 export function tuiTheme(theme: Theme): TuiTheme {
 	return ensureCachedTheme(theme).facade;
 }

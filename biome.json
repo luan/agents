@@ -1,5 +1,5 @@
 {
-	"$schema": "https://biomejs.dev/schemas/2.5.10/schema.json",
+	"$schema": "https://biomejs.dev/schemas/2.6.3/schema.json",
 	"files": {
 		"includes": [
 			"harnesses/pi/agent/packages/pi-*/src/**/*.ts",
@@ -39,7 +39,11 @@
 		},
 		{
 			"path": "./lint/pi/no-fixed-terminal-colors.grit",
-			"includes": ["harnesses/pi/agent/packages/pi-*/src/**/*.ts", "!**/pi-libtui/src/color/theme.ts"]
+			"includes": [
+				"harnesses/pi/agent/packages/pi-*/src/**/*.ts",
+				"!**/pi-libtui/src/color/theme.ts",
+				"!**/pi-libtui/src/terminal/color-compatibility.ts"
+			]
 		}
 	],
 	"overrides": [

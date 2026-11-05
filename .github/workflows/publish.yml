@@ -29,15 +29,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
 
       - name: Set up Node and npm
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -47,7 +45,7 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Set up just
-        uses: extractions/setup-just@v3
+        uses: extractions/setup-just@v4
 
       - name: Install workspace
         run: bun install --frozen-lockfile
@@ -65,7 +63,7 @@ jobs:
           echo "path=$archive" >> "$GITHUB_OUTPUT"
 
       - name: Save package archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: npm-package
           path: ${{ steps.archive.outputs.path }}

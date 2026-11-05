@@ -20,6 +20,8 @@ const context: Parameters<NonNullable<ToolDefinition<typeof schema, Conversation
 		expanded: true,
 		showImages: false,
 		isError: false,
+		durationMs: undefined,
+		outputPad: 0,
 		lastComponent: undefined,
 		invalidate() {},
 	};

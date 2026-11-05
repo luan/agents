@@ -3,7 +3,7 @@ import { initTheme, UserMessageComponent } from "@earendil-works/pi-coding-agent
 import { ProcessTerminal, stripTerminalSequences, Text, TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
 import { Terminal as VirtualTerminal } from "@xterm/headless";
 import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE } from "../src/appearance.ts";
-import { backgroundAnsiAtColumn } from "../src/decoration/powerline-pill.ts";
+import { backgroundAnsiAtColumn } from "../src/terminal/color-compatibility.ts";
 import { installUserMessageBridge } from "../src/host/user-message-bridge.ts";
 
 const disposers: Array<() => void> = [];

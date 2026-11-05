@@ -33,9 +33,9 @@ Outside the TUI (print, RPC, and other non-interactive modes), the command
 only prints a warning.
 
 Configured `defaultTools` form the session's tool baseline. Startup, resume,
-reload, and branch navigation automatically enable that selection while keeping
-other active tools. Historical tool declarations cannot remove configured tools.
-Pi's explicit tool allowlists and exclusions still limit the available tools.
+reload, and navigation re-enable that selection while keeping other active tools.
+Pi 1.4 also restores defaults for extension tools absent from the saved branch.
+Explicit tool allowlists and exclusions still limit the available tools.
 Changes take effect on the next turn without rewriting history.
 
 The left sidebar lists eight pages: UI, Editor, UX, Animations, Terminal,

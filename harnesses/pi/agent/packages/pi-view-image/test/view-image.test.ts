@@ -374,6 +374,8 @@ describe("view_image", () => {
 				expanded,
 				showImages: false,
 				isError: false,
+				durationMs: undefined,
+				outputPad: 0,
 			});
 		const expanded = render(true);
 		expect(expanded.render(100).length).toBeGreaterThan(render(false).render(100).length);

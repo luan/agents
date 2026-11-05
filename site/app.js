@@ -18,7 +18,7 @@ const addCopyButtons = () => {
 		button.textContent = "Copy";
 		button.onclick = async () => {
 			try {
-				await navigator.clipboard.writeText(pre.querySelector("code").innerText.replace(/\n$/, ""));
+				await navigator.clipboard.writeText(pre.querySelector("code").textContent.replace(/\n$/, ""));
 				button.textContent = "Copied";
 			} catch {
 				button.textContent = "Copy failed";

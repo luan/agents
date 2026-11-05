@@ -6,7 +6,7 @@ The useful part is under `harnesses/pi/agent/packages`: thirteen Pi extensions, 
 
 ## Set up
 
-You need Rust, Bun 1.4.0, [`just`](https://github.com/casey/just), and Pi.
+You need Rust, Bun 1.4.4, [`just`](https://github.com/casey/just), and Pi.
 
 The voice host links against the system Opus library, which it finds through `pkg-config`. Without `pkg-config`, the build falls back to Opus's bundled CMake project, and CMake 4 rejects that project. On macOS, run `brew install opus pkgconf`. On Linux, also install the ALSA headers (`libasound2-dev`).
 
@@ -87,7 +87,7 @@ Use `Alt+P` for Pi's model picker and `Alt+,` / `Alt+.` to decrease or increase
 reasoning effort. Subagents inherit the parent's model and effort unless a
 spawn supplies direct overrides.
 
-The managed harness requires Pi 1.0.0 or later and uses its built-in `codemode`,
+The managed harness requires Pi 1.4.0 or later and uses its built-in `codemode`,
 `tool_search`, and MCP support. `pi.defaultTools` selects tools; the managed
 `codemode.mode = "only"` routes callable tools through JavaScript scripts.
 Configured tools are restored automatically on session startup, resume, reload,

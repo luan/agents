@@ -25,10 +25,10 @@
     "@luan.sh/pi-libtui": "workspace:*",
     "@luan.sh/pi-xsettings": "workspace:*",
     "@luan.sh/pi-libactions": "workspace:*",
-    "ws": "^8.21.3",
-    "undici": "8.10.0",
+    "ws": "^8.22.0",
+    "undici": "8.12.3",
     "proxy-from-env": "2.1.0",
-    "https-proxy-agent": "^7.0.6",
+    "https-proxy-agent": "^9.1.0",
     "selfsigned": "^5.5.0",
     "@luan.sh/pi-developer-messages": "workspace:*"
   },
@@ -39,19 +39,19 @@
     "@luan.sh/pi-developer-messages"
   ],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=1.0.0",
+    "@earendil-works/pi-coding-agent": ">=1.4.0",
     "typebox": "*",
-    "@earendil-works/pi-ai": ">=1.0.0",
-    "@earendil-works/pi-tui": ">=1.0.0"
+    "@earendil-works/pi-ai": ">=1.4.0",
+    "@earendil-works/pi-tui": ">=1.4.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "1.0.0",
-    "@types/bun": "^1.3.0",
-    "typescript": "^6.0.3",
-    "@earendil-works/pi-tui": "1.0.0",
-    "@earendil-works/pi-ai": "1.0.0",
-    "@types/ws": "^8.18.1",
-    "typebox": "1.3.15"
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2",
+    "@earendil-works/pi-tui": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@types/ws": "^8.18.2",
+    "typebox": "1.4.3"
   },
   "scripts": {
     "typecheck": "tsc --build",

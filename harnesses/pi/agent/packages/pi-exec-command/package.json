@@ -24,9 +24,9 @@
     "video": "https://pi.luan.sh/media/previews/pi-exec-command-00eaa4fd94c5.mp4"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=1.0.0",
-    "@earendil-works/pi-tui": ">=1.0.0",
-    "typebox": "*"
+    "@earendil-works/pi-coding-agent": ">=1.4.0",
+    "@earendil-works/pi-tui": ">=1.4.0",
+    "typebox": "^1.4.3"
   },
   "dependencies": {
     "@luan.sh/pi-libactions": "workspace:*",
@@ -39,10 +39,10 @@
     "@luan.sh/pi-xsettings"
   ],
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "1.0.0",
-    "@earendil-works/pi-tui": "1.0.0",
-    "@types/bun": "^1.3.0",
-    "typescript": "^6.0.3"
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-tui": "1.4.0",
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
   },
   "scripts": {
     "typecheck": "tsc --build",

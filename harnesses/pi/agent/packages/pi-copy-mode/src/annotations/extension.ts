@@ -259,7 +259,7 @@ export default function annotationExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", (event) => {
-		if (!parseEnvelope(event.prompt)) return;
+		if (!("prompt" in event) || !parseEnvelope(event.prompt)) return;
 		if (hasDeveloperPromptHost()) return;
 		return {
 			systemPrompt: `${event.systemPrompt}\n\n${ANNOTATION_SYSTEM_GUIDANCE}`,

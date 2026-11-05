@@ -182,11 +182,8 @@ export {
 	type PointerInteractionHandlers,
 	type PointerInteractionOptions,
 } from "./decoration/pointer-interaction.ts";
-export {
-	backgroundAnsiAtColumn,
-	contrastingPillBackground,
-	renderPill,
-} from "./decoration/powerline-pill.ts";
+export { contrastingPillBackground, renderPill } from "./decoration/powerline-pill.ts";
+export { backgroundAnsiAtColumn } from "./terminal/color-compatibility.ts";
 export type {
 	ActivityIndicatorOptions,
 	ProgressBarOptions,

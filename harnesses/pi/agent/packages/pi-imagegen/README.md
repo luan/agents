@@ -1,7 +1,7 @@
 # @luan.sh/pi-imagegen
 
 Codex image generation and editing using the standalone
-`@howaboua/pi-codex-imagegen` package, pinned to `0.0.4`. The conversion extension is not required.
+`@howaboua/pi-codex-imagegen` package, pinned to `0.0.12`. The conversion extension is not required at runtime.
 Sign in to OpenAI Codex in Pi, then ask for an image. The managed harness loads
 the tool automatically.
 
@@ -14,6 +14,9 @@ and the transcript.
 Install independently with `pi install ./harnesses/pi/agent/packages/pi-imagegen`.
 Do not also load the upstream extension entry point: this package registers its
 public tool implementation with our shared renderer.
+
+The upstream optional conversion peer is a development dependency for typechecking
+its exported tool. Standalone installs do not load or require that extension.
 
 | Responsibility | Owner |
 | --- | --- |

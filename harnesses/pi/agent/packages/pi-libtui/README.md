@@ -72,7 +72,7 @@ defaults apply.
 
 ## Themes
 
-Requires Pi 1.0.0 or later. Pi's public terminal-color query supplies default
+Requires Pi 1.4.0 or later. Pi's public terminal-color query supplies default
 colors and the ANSI palette; libtui additionally measures the two indexed
 palette anchors used by `harmonious`.
 

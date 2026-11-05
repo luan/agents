@@ -2,10 +2,11 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { type TuiForegroundColor, tuiTheme } from "../color/theme.ts";
 import type { PillContent } from "./glyphs.ts";
-import { backgroundAnsiAtColumn, contrastingPillBackground, renderPill } from "./powerline-pill.ts";
+import { contrastingPillBackground, renderPill } from "./powerline-pill.ts";
+import { backgroundAnsiAtColumn } from "../terminal/color-compatibility.ts";
 
 const PASTE_MARKER = String.raw`\[paste #\d+(?: [^\]\r\n]*)?\]`;
-const RENDERED_PASTE_MARKER = new RegExp(`(?:\\x1b\\[7m(${PASTE_MARKER})\\x1b\\[0m)|(${PASTE_MARKER})`, "g");
+const RENDERED_PASTE_MARKER = renderedTokenPattern(PASTE_MARKER);
 
 export interface EditorTokenPresentation {
 	readonly token: string;
@@ -46,6 +47,11 @@ export function renderEditorTokenPill(context: EditorTokenPillRenderContext): st
 	return renderPill(theme, content, background, "text.primary", undefined, destination);
 }
 
+// Pi 1.4 marks cursor cells explicitly; older hosts paint them with inverse SGR.
+function renderedTokenPattern(token: string): RegExp {
+	return new RegExp(String.raw`(?:(?:\x1b\[7m|\x1b_pi:fc\x07)(${token})(?:\x1b\[0m|\x1b_pi:/fc\x07))|(${token})`, "gu");
+}
+
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -66,7 +72,7 @@ export function renderEditorTokenPills(
 	let rendered = [...lines];
 	for (const presentation of present) {
 		const escaped = escapeRegExp(presentation.token);
-		const pattern = new RegExp(`(?:\\x1b\\[7m(${escaped})\\x1b\\[0m)|(${escaped})`, "gu");
+		const pattern = renderedTokenPattern(escaped);
 		rendered = rendered.map((line, lineIndex) =>
 			replaceMatches(
 				line,

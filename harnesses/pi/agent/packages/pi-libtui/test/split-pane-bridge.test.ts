@@ -168,6 +168,7 @@ describe("split-pane bridge", () => {
 			clearScreen: () => {},
 			setTitle: () => {},
 			setProgress: () => {},
+			setProgramStatus: () => {},
 		};
 		const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
 		const removePane = panes.mount({

@@ -30,6 +30,18 @@ interface RenderContext {
 	lastComponent?: Component;
 	invalidate(): void;
 }
+// type-boundary: Pi's renderer supplies untyped arguments; orchestrationArgs narrows code/query once.
+type UntrustedOrchestrationArgs = unknown;
+
+function orchestrationArgs(value: UntrustedOrchestrationArgs): RenderContext["args"] {
+	if (!value || typeof value !== "object") return {};
+	const code: UntrustedOrchestrationArgs = Reflect.get(value, "code");
+	const query: UntrustedOrchestrationArgs = Reflect.get(value, "query");
+	return {
+		...(typeof code === "string" ? { code } : {}),
+		...(typeof query === "string" ? { query } : {}),
+	};
+}
 interface ScriptResult {
 	content: { type: string; text?: string }[];
 	details?: PresentationJson;
@@ -42,7 +54,8 @@ export function nativeOrchestrationRenderers(
 	return {
 		renderShell: "self",
 		renderCall: () => new Container(),
-		renderResult(result: ScriptResult, options: ToolRenderResultOptions, theme: Theme, context: RenderContext) {
+		renderResult(result: ScriptResult, options: ToolRenderResultOptions, theme: Theme, nativeContext) {
+			const context: RenderContext = { ...nativeContext, args: orchestrationArgs(nativeContext.args) };
 			if (name === "tool_search")
 				return ToolActivity.reuse(context.lastComponent, {
 					theme,

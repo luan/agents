@@ -3,7 +3,7 @@ import { type Component, compositeTuiLine, type KeyId, matchesKey, visibleWidth 
 import { getTuiAppearance } from "../appearance.ts";
 import { tuiTheme } from "../color/theme.ts";
 import { getTuiPillSeparators, icon, keyHintGlyph, type TuiIconName } from "../decoration/glyphs.ts";
-import { backgroundAnsiAtColumn } from "../decoration/powerline-pill.ts";
+import { backgroundAnsiAtColumn } from "../terminal/color-compatibility.ts";
 import type { MouseRect, MouseRegistry, ScreenDecorationContext, TuiMouseEvent, ViewportRect } from "../mouse.ts";
 import type { SelectionPoint } from "../selection.ts";
 

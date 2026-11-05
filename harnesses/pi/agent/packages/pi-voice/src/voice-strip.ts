@@ -21,7 +21,7 @@ function meter(history: readonly number[]): string {
 export function renderVoiceStrip(
 	state: VoiceStripState,
 	keys: VoiceStripKeys,
-	theme: TuiTheme,
+	colors: TuiTheme,
 	width: number,
 ): string[] {
 	if (state.status === "off" || width < 1) return [];
@@ -31,9 +31,9 @@ export function renderVoiceStrip(
 		state.status !== "stopping";
 	const live = ready && !state.muted && (!state.recording || state.status === "recording");
 	const status = state.muted ? "muted" : state.status;
-	const marker = theme.fg(live ? "negative" : "text.muted", live ? "●" : "◌");
+	const marker = colors.fg(live ? "negative" : "text.muted", live ? "●" : "◌");
 	const label = state.recording ? "dictation" : "voice";
-	const left = `${theme.fg("text.secondary", label)} ${marker} ${theme.fg("text.muted", status)}`;
+	const left = `${colors.fg("text.secondary", label)} ${marker} ${colors.fg("text.muted", status)}`;
 	const controls = state.recording
 		? [...(state.status === "recording" ? [`${keys.dictate} finish`] : []), "esc cancel"]
 		: [...(state.active && ready ? [`${keys.mute} ${state.muted ? "unmute" : "mute"}`] : []), `${keys.toggle} stop`];
@@ -41,16 +41,16 @@ export function renderVoiceStrip(
 	const gap = width - visibleWidth(left) - visibleWidth(right);
 	const lines =
 		gap >= 2
-			? [left + " ".repeat(gap) + theme.fg("text.secondary", right)]
+			? [left + " ".repeat(gap) + colors.fg("text.secondary", right)]
 			: [
 					truncateToWidth(left, width),
 					...(visibleWidth(right) <= width ? [right] : controls).map((line) =>
-						theme.fg("text.secondary", truncateToWidth(line, width)),
+						colors.fg("text.secondary", truncateToWidth(line, width)),
 					),
 				];
 	if (hasLevels && ready && (!state.recording || state.status === "recording")) {
 		const levels = `mic ${meter(state.muted ? [] : state.activity.microphone)}${state.recording ? "" : `  Pi ${meter(state.activity.speaker)}`}`;
-		if (visibleWidth(levels) <= width) lines.push(theme.fg("text.muted", levels));
+		if (visibleWidth(levels) <= width) lines.push(colors.fg("text.muted", levels));
 	}
 	for (const [role, text] of Object.entries(state.activity.captions)) {
 		if (!text) continue;
@@ -61,7 +61,7 @@ export function renderVoiceStrip(
 			visibleWidth(clean) <= available
 				? clean
 				: `…${sliceByColumn(clean, Math.max(0, visibleWidth(clean) - available + 1), Math.max(0, available - 1))}`;
-		lines.push(theme.fg("text.secondary", truncateToWidth(prefix + tail, width)));
+		lines.push(colors.fg("text.secondary", truncateToWidth(prefix + tail, width)));
 	}
 	return lines;
 }

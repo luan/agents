@@ -4,7 +4,8 @@ import { type TuiForegroundToken, tuiTheme } from "../color/theme.ts";
 import type { ViewportRect } from "../mouse.ts";
 import type { SelectionPoint } from "../selection.ts";
 import { getTuiPillSeparators, icon, type TuiIconName } from "./glyphs.ts";
-import { backgroundAnsiAtColumn, renderPill } from "./powerline-pill.ts";
+import { renderPill } from "./powerline-pill.ts";
+import { backgroundAnsiAtColumn } from "../terminal/color-compatibility.ts";
 
 /** Content displayed by a short-lived cursor-local pill. */
 export interface TransientPillMessage {

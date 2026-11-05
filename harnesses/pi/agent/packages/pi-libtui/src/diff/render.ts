@@ -119,10 +119,11 @@ function renderFoldRow(
 	width: number,
 	numberWidth: number,
 ): string {
+	const { theme: colors } = options;
 	const hovered = options.omissionRowHovered === true;
 	const gutterBackground = hovered ? "diff.hunkGutterHover" : "diff.hunkGutter";
 	const sample = row.sample
-		? ` ${options.theme.fg(
+		? ` ${colors.fg(
 				row.sample.kind === "added"
 					? { hue: "green", shade: 3 }
 					: row.sample.kind === "removed"
@@ -252,23 +253,23 @@ function renderLogicalRow(
 	syntax: ReadonlyMap<string, readonly SyntaxHighlightSpan[]>,
 	width: number,
 	numberWidth: number,
-	theme: TuiTheme,
+	colors: TuiTheme,
 	surface: TuiBackgroundToken,
 	maxRows: number,
 ): string[] {
-	if (row.kind === "header") return [paintFullRow(theme, surface, "text.secondary", row.text, width)];
+	if (row.kind === "header") return [paintFullRow(colors, surface, "text.secondary", row.text, width)];
 	if (row.kind === "hunk") {
 		return [
-			paintDiffRow(theme, {
+			paintDiffRow(colors, {
 				background: "diff.hunk",
-				foreground: theme.contrastBackground(theme.color("diff.hunk")),
+				foreground: colors.contrastBackground(colors.color("diff.hunk")),
 				gutter: gutterIcon(icon("diff-hunk")),
 				content: row.text,
 				width,
 				numberWidth,
 				gutterBackground: "diff.hunkGutter",
 				gutterForeground: "text.muted",
-				gutterColor: theme.contrastBackground(theme.color("diff.hunkGutter")),
+				gutterColor: colors.contrastBackground(colors.color("diff.hunkGutter")),
 			}),
 		];
 	}
@@ -293,7 +294,7 @@ function renderLogicalRow(
 	const highlighted = syntax.get(line.ref);
 	// Line numbers share the changed-row background, so the positive/negative
 	// foregrounds used by the code and rail can disappear on light themes.
-	// Keep the rails semantic, but use the theme's primary text for the number
+	// Keep the rails semantic, but use the colors's primary text for the number
 	// lane so it remains readable against both dark and light diff surfaces.
 	const lineNumberColor: TuiForegroundColor = line.kind === "context" ? "text.muted" : "text.primary";
 	let sourceOffset = 0;
@@ -308,18 +309,18 @@ function renderLogicalRow(
 						: "text.muted";
 		const prefix =
 			wrappedIndex === 0
-				? `${theme.fg(railColor, rail)} ${theme.fg(lineNumberColor, formatLineNumber(lineNumber, numberWidth))} `
-				: `${theme.fg(railColor, rail)} ${" ".repeat(numberWidth)} `;
+				? `${colors.fg(railColor, rail)} ${colors.fg(lineNumberColor, formatLineNumber(lineNumber, numberWidth))} `
+				: `${colors.fg(railColor, rail)} ${" ".repeat(numberWidth)} `;
 		const spans = styleSyntaxSpans(
 			text,
 			sliceSyntaxSpans(highlighted, sourceOffset, sourceOffset + text.length),
-			theme,
+			colors,
 			foreground,
 			background,
 			line.kind,
 		);
 		sourceOffset += text.length;
-		return paintDiffRow(theme, {
+		return paintDiffRow(colors, {
 			background,
 			gutterBackground,
 			foreground,
@@ -334,20 +335,20 @@ function renderLogicalRow(
 function styleSyntaxSpans(
 	text: string,
 	spans: readonly SyntaxHighlightSpan[] | undefined,
-	theme: TuiTheme,
+	colors: TuiTheme,
 	fallback: TuiForegroundColor,
 	lineBackground: TuiBackgroundToken,
 	kind: UnifiedDiffLineKind,
 ): string {
-	if (!spans || spans.length === 0) return theme.fg(fallback, text);
+	if (!spans || spans.length === 0) return colors.fg(fallback, text);
 	const sanitized = spans.map((span) => ({ ...span, text: sanitizeTuiText(span.text) }));
-	if (sanitized.map((span) => span.text).join("") !== text) return theme.fg(fallback, text);
+	if (sanitized.map((span) => span.text).join("") !== text) return colors.fg(fallback, text);
 	let output = "";
 	for (const span of sanitized) {
-		const painted = theme.fg(span.foreground ?? fallback, span.text);
+		const painted = colors.fg(span.foreground ?? fallback, span.text);
 		if (span.emphasized && (kind === "added" || kind === "removed")) {
 			const emphasis = kind === "added" ? "diff.addedEmphasis" : "diff.removedEmphasis";
-			output += `${theme.bgAnsi(emphasis)}${painted}${theme.bgAnsi(lineBackground)}`;
+			output += `${colors.bgAnsi(emphasis)}${painted}${colors.bgAnsi(lineBackground)}`;
 		} else output += painted;
 	}
 	return output;
@@ -377,7 +378,7 @@ function sliceSyntaxSpans(
 }
 
 function paintFullRow(
-	theme: TuiTheme,
+	colors: TuiTheme,
 	background: TuiBackgroundToken,
 	foreground: TuiForegroundColor,
 	content: string,
@@ -385,7 +386,7 @@ function paintFullRow(
 ): string {
 	const clipped = truncateToWidth(content, width, "");
 	const padding = " ".repeat(Math.max(0, width - visibleWidth(clipped)));
-	return `${theme.bgAnsi(background)}${theme.fgAnsi(foreground)}${clipped}${padding}\x1b[0m`;
+	return `${colors.bgAnsi(background)}${colors.fgAnsi(foreground)}${clipped}${padding}\x1b[0m`;
 }
 
 function gutterIcon(glyph: string): string {
@@ -407,7 +408,7 @@ interface DiffRowPaintOptions {
 	readonly gutterColor?: TuiColor;
 }
 
-function paintDiffRow(theme: TuiTheme, options: DiffRowPaintOptions): string {
+function paintDiffRow(colors: TuiTheme, options: DiffRowPaintOptions): string {
 	const {
 		background,
 		gutterBackground,
@@ -429,11 +430,11 @@ function paintDiffRow(theme: TuiTheme, options: DiffRowPaintOptions): string {
 	const padding = " ".repeat(Math.max(0, contentWidth - visibleWidth(clippedContent)));
 	const gutterText = `${clippedGutter}${gutterPadding}`;
 	const paintedGutter = gutterColor
-		? theme.fg(gutterColor, gutterText)
+		? colors.fg(gutterColor, gutterText)
 		: gutterForeground
-			? `${theme.fgAnsi(gutterForeground)}${gutterText}`
+			? `${colors.fgAnsi(gutterForeground)}${gutterText}`
 			: gutterText;
-	return `${theme.bgAnsi(gutterBackground)}${paintedGutter}${theme.bgAnsi(background)}${theme.fgAnsi(foreground)}${clippedContent}${padding}\x1b[0m`;
+	return `${colors.bgAnsi(gutterBackground)}${paintedGutter}${colors.bgAnsi(background)}${colors.fgAnsi(foreground)}${clippedContent}${padding}\x1b[0m`;
 }
 
 function wrapPlain(text: string, width: number, maxRows: number): string[] {
@@ -479,11 +480,11 @@ function positiveInteger(value: number | undefined, fallback: number): number {
 	return value === undefined || !Number.isFinite(value) ? fallback : Math.max(1, Math.floor(value));
 }
 
-function themeId(theme: TuiTheme): number {
-	const existing = themeIds.get(theme);
+function themeId(colors: TuiTheme): number {
+	const existing = themeIds.get(colors);
 	if (existing !== undefined) return existing;
 	const id = nextThemeId++;
-	themeIds.set(theme, id);
+	themeIds.set(colors, id);
 	return id;
 }
 

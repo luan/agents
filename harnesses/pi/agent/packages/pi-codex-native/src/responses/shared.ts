@@ -75,17 +75,14 @@ export function splitDeferredTools(
 	enabled: boolean,
 ): { immediate: Tool[]; deferred: Map<string, Tool> } {
 	const messages = normalizeContext(context).messages;
-	const placement = resolveTranscriptTools(messages, enabled);
+	const placement = resolveTranscriptTools(messages, enabled ? "additions" : "none");
 	return {
 		immediate: placement.requestTools,
 		deferred: new Map(
-			placement.anchorsAdditions
-				? messages
-						.slice(1)
-						.flatMap((message) =>
-							message.role === "system" ? (message.toolsAdded ?? []).map((tool) => [tool.name, tool] as const) : [],
-						)
-				: [],
+			messages
+				.filter((message) => message.role === "system")
+				.slice(placement.foldedSystemMessages)
+				.flatMap((message) => (message.toolsAdded ?? []).map((tool) => [tool.name, tool] as const)),
 		),
 	};
 }

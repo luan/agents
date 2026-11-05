@@ -1,7 +1,7 @@
 import { UserMessageComponent } from "@earendil-works/pi-coding-agent";
 import { sliceByColumn, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { getTuiAppearance } from "../appearance.ts";
-import { nativeSurfaceCap } from "../decoration/powerline-pill.ts";
+import { nativeSurfaceCap } from "../terminal/color-compatibility.ts";
 
 const BRIDGE_PROTOCOL = "pi-libtui/user-message-bridge/v1" as const;
 const BRIDGE_KEY = Symbol.for(BRIDGE_PROTOCOL);

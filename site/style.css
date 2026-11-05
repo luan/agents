@@ -407,10 +407,6 @@ footer {
 	color: var(--text);
 	text-decoration: none;
 }
-.sidebar nav li.active > a {
-	color: var(--lavender);
-	font-weight: 700;
-}
 .sidebar nav li ul {
 	border-left: 1px solid var(--surface1);
 	margin: 0.2rem 0 0.4rem 0.35rem;
@@ -419,6 +415,10 @@ footer {
 .sidebar nav li ul a {
 	font-size: 0.85rem;
 	padding: 0.05rem 0.4rem;
+}
+.sidebar nav li.active > a {
+	color: var(--lavender);
+	font-weight: 700;
 }
 
 @media (max-width: 60rem) {
