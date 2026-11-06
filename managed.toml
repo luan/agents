@@ -2,7 +2,7 @@
 name = "claude"
 source = "harnesses/claude"
 target = ".claude"
-links = ["CLAUDE.md", "statusline.py"]
+links = ["CLAUDE.md", "statusline.py", "output-styles/proactive-concise.md"]
 trees = []
 # Apps and Claude Code rewrite settings.json, so it is a local file seeded from this one.
 seeds = [{ source = "settings.json", target = "settings.json" }]
