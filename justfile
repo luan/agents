@@ -7,10 +7,13 @@ home := env("HOME", env("USERPROFILE", ""))
 default:
     @just --list
 
-setup:
+# Build, install the locked JavaScript dependencies and link the harnesses, without the checks.
+install:
     @cargo build --locked --manifest-path "{{ repo }}/Cargo.toml" --release
     @bun install --cwd "{{ repo }}" --frozen-lockfile
     @cargo xtask harness setup --home "{{ home }}"
+
+setup: install
     @just home="{{ home }}" check
 
 format:

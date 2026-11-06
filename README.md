@@ -16,7 +16,7 @@ cd agents
 just setup
 ```
 
-`just setup` builds the Rust binaries, installs the JavaScript dependencies from the lockfile, creates the managed harness links, and runs the complete check suite.
+`just setup` builds the Rust binaries, installs the JavaScript dependencies from the lockfile, creates the managed harness links, and runs the complete check suite. `just install` does the same without the check suite, for unattended updates on machines where a test may depend on the local environment.
 
 The harness roots remain ordinary directories: `~/.claude`, `~/.codex`, and `~/.pi` are never replaced with symlinks. The setup tool links only the paths listed in `managed.toml`, using the checkout it runs from. Setup automatically repairs conflicting file and dependency links. Before replacing an occupied target, it moves the original file, directory, or symlink into `~/.agents-harness-backups/<target path>/<revision>/original` and prints its location. Existing backups are never overwritten. Move an original back to its target path to restore it; relative symlinks retain their original link text for that restoration. Setup still refuses to traverse symlinked runtime directories.
 
