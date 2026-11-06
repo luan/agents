@@ -3,6 +3,7 @@
   "env": {
     "GIT_USERNAME": "luan"
   },
+  "disableAllHooks": true,
   "attribution": {
     "commit": "",
     "pr": ""

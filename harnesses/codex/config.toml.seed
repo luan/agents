@@ -9,7 +9,7 @@ approvals_reviewer = "auto_review"
 service_tier = "default"
 
 [features]
-hooks = true
+hooks = false
 prevent_idle_sleep = true
 memories = true
 
