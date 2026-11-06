@@ -28,7 +28,7 @@
     "notion@claude-plugins-official": true,
     "pyright-lsp@claude-plugins-official": true,
     "rust-analyzer-lsp@claude-plugins-official": true,
-    "swift-lsp@claude-plugins-official": true,
+    "swift-lsp@claude-plugins-official": false,
     "slack@claude-plugins-official": true,
     "datadog@claude-plugins-official": true,
     "sentry@claude-plugins-official": true,
