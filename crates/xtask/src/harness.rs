@@ -312,54 +312,25 @@ fn create_file_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_file(source, target)
 }
 
-fn preserve_target(target: &Path, safe_root: &Path) -> Result<PathBuf> {
-    let relative = target.strip_prefix(safe_root)?;
-    let directory = safe_root.join(".agents-harness-backups").join(relative);
-    ensure_safe_target_parent(Operation::Setup, &directory.join("entry"), safe_root)?;
-    // Reserve a fresh directory atomically so repeated repairs never overwrite a backup.
-    for revision in 1_u64.. {
-        let slot = directory.join(revision.to_string());
-        match fs::create_dir(&slot) {
-            Ok(()) => {
-                let backup = slot.join("original");
-                fs::rename(target, &backup).with_context(|| {
-                    format!("preserve {} at {}", target.display(), backup.display())
-                })?;
-                eprintln!("Preserved {} at {}", target.display(), backup.display());
-                return Ok(backup);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error).context("reserve harness backup"),
-        }
-    }
-    bail!("exhausted harness backup revisions")
-}
-
 fn install_link(
     source: &Path,
     target: &Path,
-    safe_root: &Path,
     create: fn(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<()> {
     if exact_link(source, target)? {
         return Ok(());
     }
-    let backup = path_status(target)?
-        .map(|_| preserve_target(target, safe_root))
-        .transpose()?;
-    if let Err(error) = create(source, target) {
-        if let Some(backup) = backup {
-            // Do not overwrite a target installed by another process during repair.
-            if path_status(target)?.is_none() {
-                fs::rename(&backup, target).with_context(|| {
-                    format!("restore {} from {}", target.display(), backup.display())
-                })?;
-            }
-        }
-        return Err(error)
-            .with_context(|| format!("link {} -> {}", target.display(), source.display()));
+    match path_status(target)? {
+        // A link holds no data, so a stale or foreign one is replaced.
+        Some(file_type) if file_type.is_symlink() => fs::remove_file(target)
+            // Windows removes a directory link as a directory.
+            .or_else(|_| fs::remove_dir(target))
+            .with_context(|| format!("remove link {}", target.display()))?,
+        Some(_) => bail!("occupied managed path: {}", target.display()),
+        None => {}
     }
-    Ok(())
+    create(source, target)
+        .with_context(|| format!("link {} -> {}", target.display(), source.display()))
 }
 
 fn manage_link(operation: Operation, source: &Path, target: &Path, safe_root: &Path) -> Result<()> {
@@ -385,7 +356,7 @@ fn manage_link(operation: Operation, source: &Path, target: &Path, safe_root: &P
             }
         }
         Operation::Setup => {
-            install_link(source, target, safe_root, create_file_symlink)?;
+            install_link(source, target, create_file_symlink)?;
         }
     }
     Ok(())
@@ -688,7 +659,7 @@ fn manage_dependency_link(
             }
         }
         Operation::Setup => {
-            install_link(source, target, safe_root, create_directory_symlink)?;
+            install_link(source, target, create_directory_symlink)?;
         }
     }
     Ok(())
