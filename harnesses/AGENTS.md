@@ -8,6 +8,15 @@ I focus on building complex things as simple as possible. I love to find ways to
 
 When a step doesn't need my input, keep going. Put status notes in the same message as your next action.
 
+## The inverted pyramid
+
+Effort goes mostly to the top layer and least to the bottom one. When a mistake, review finding, or correction could recur, fix it in the highest layer that can prevent it.
+
+1. **Codebase improvements**: better architecture, stronger types and invariants, clear boundaries. Agents love to copy what exists and take the shortest path, so make the easy thing the right thing. Categorically eliminate problems through code and you won't need to think about them again.
+2. **Static analysis**: lint rules, tests, CI, verification (for example TLA+). These are very token-efficient ways to catch issues ahead of time. Prove that the guard catches the actual mistake.
+3. **Prose**: comments, rules, `AGENTS.md`, skills, meaning anything that can't be enforced and depends on the agent's judgment. Use it minimally, for choices that need judgment, but do use the skill that fits the task.
+4. **Human review**: the hardest layer to scale. Spend it on designing an environment where agents do the right thing by default.
+
 ## Instruction ownership
 
 - Keep shared project requirements in the project's repository so every developer and agent can use them.
@@ -15,7 +24,6 @@ When a step doesn't need my input, keep going. Put status notes in the same mess
 - Use temporary directories and caches for disposable files, never as the source of durable instructions. Keep issue scope and ownership in issues, and completed behavior and evidence in pull requests; do not create separate coordination journals.
 - In coordinator tasks, inspect final images when responsible for visual acceptance. Keep intermediate image payloads with feature owners; request final originals, concise findings, the reviewed source revision and evidence links.
 - Before placing a checkout, large build target, fixture tree or QA scratch, check the destination filesystem. Use disk-backed storage when the default temporary directory is RAM-backed, and measure free space where the data will live. Clean only the owned scratch root.
-- NEVER, EVER vendor dependencies unless EXPLICITLY instructed to do so.
 
 ## Coding
 
@@ -36,6 +44,7 @@ When a step doesn't need my input, keep going. Put status notes in the same mess
 15. Test public behavior. Do not test implementation details or expose internals via forged interfaces only for a test. Delete tests that do not protect behavior.
 16. Do not use types like `any` in languages that provide it.
 17. Tests should be near-instant as much as possible. There is no excuse for a test to take real clock time.
+18. NEVER, EVER vendor dependencies unless EXPLICITLY instructed to do so.
 
 ## Functions
 
@@ -54,9 +63,8 @@ When a step doesn't need my input, keep going. Put status notes in the same mess
 5. In a scoped internal migration, move callers to the intended contract and remove the obsolete API when no external consumer requires it. Planned intermediate breakage must be explicit and reversible, with checks at phase boundaries and complete validation before handoff.
 6. Reuse existing commands and harnesses to perform or prove the work. Add the smallest rerunnable tool only when it improves repeatability or verification. Verify the real output or user path, and distinguish observed results from source inspection and remaining gaps.
 7. Before acting on a measured number, establish what decision it informs. Check that the intended work happened correctly, account for failures, use comparable configurations, and distinguish variation from an effect. Explain the limiter and end-to-end relevance when claiming a performance improvement.
-8. When a correction recurs, prefer fixing architecture, types, lint, or tests over adding another instruction. Prove that the guard catches the actual mistake. Keep written rules for choices that need judgment.
-9. While iterating, run the lint gate CI enforces on the code you changed, not just a compile or type check.
-10. Judge a design by the experience of its users, callers, and next maintainer. Prefer a smaller polished interaction over extra controls or options that serve only implementation convenience.
+8. While iterating, run the lint gate CI enforces on the code you changed, not just a compile or type check.
+9. Judge a design by the experience of its users, callers, and next maintainer. Prefer a smaller polished interaction over extra controls or options that serve only implementation convenience.
 
 ## Rust
 
@@ -71,10 +79,9 @@ When a step doesn't need my input, keep going. Put status notes in the same mess
 
 1. `mod.rs` and `lib.rs` should only have module declarations and re-exports.
 2. Implementation logic, state, etc belong in named modules.
-3. Avoid `#[cfg(test)]`, test declarations, fixtures, or test support non-test modules. A path bridge into `tests/` still violates this boundary.
-4. Keep all test code out of production source files. Unless otherwise overriden by the project.
-5. Tests go under that crate's `tests/` as normal Cargo integration targets.
-6. In cargo workspaces, use the root `tests/` directory only for cross-crate product behavior and executable boundaries.
+3. Keep all test code out of production source files unless the project overrides this: no `#[cfg(test)]`, test declarations, fixtures, or test support in non-test modules. A path bridge into `tests/` still violates this boundary.
+4. Tests go under that crate's `tests/` as normal Cargo integration targets.
+5. In cargo workspaces, use the root `tests/` directory only for cross-crate product behavior and executable boundaries.
 
 ### Testing
 
@@ -99,11 +106,12 @@ When a step doesn't need my input, keep going. Put status notes in the same mess
 
 1. Titles should use conventional commit, i.e. "fix(render): new threads no longer spike CPU"
 2. PR descriptions should aim for simplicity. Open with a minimal, clear description of the problem. Follow up with how you solved it.
-3. When asked to monitor or babysit a PR, poll for checks and comments created after the latest push.
+3. When asked to monitor or babysit a PR, process checks and comments created after the latest push and use the harness's existing watcher. Keep unresolved older review state in the readiness assessment. Use one watcher per PR and stay quiet when nothing changes.
 4. Verify each bot finding against the source before acting on it.
-5. Fix valid findings. Dismiss false positives with a written reason.
+5. Act on verified bot findings without asking me, including while watching a PR. Fix a valid finding, then commit and push. Reply to a false positive with the reason, then resolve its thread. This overrides any skill or workflow that holds comment decisions for a human checkpoint. Leave human reviewer threads to me.
 6. Investigate CI failures. Distinguish failures caused by the change from known flakes.
-7. Stay quiet when nothing has changed.
+7. Stacked PRs always use GitHub stacks via `gh stack`: `gh stack init` adopts the branches, bottom to top, and `gh stack submit` pushes them and links the PRs. Pointing a PR's base at another branch is not enough.
+8. PRs that change UI need screenshot or video evidence. Upload media with `gh`'s `--attach` flag on `gh pr create`, `gh pr edit`, or `gh pr comment`: reference the local file in the body, such as `![Before](./before.png)`, and pass `--attach ./before.png`, so `gh` uploads it and rewrites the reference. Never push media to a branch or wait on a browser to upload it.
 
 ## Communication
 
@@ -112,8 +120,7 @@ When a step doesn't need my input, keep going. Put status notes in the same mess
 3. Write clear, direct prose with common and concrete words.
 4. Lead with the conclusion, action, and any warning that could change the action.
 5. Use short active sentences. Prefer verbs over abstract nouns. Unpack dense noun phrases.
-6. Remove filler, canned framing, repetition, and unnecessary background.
+6. Remove filler, stock assistant framing, repetition, unnecessary background, and generic sentences that could describe another project.
 7. Keep necessary technical terms, commands, identifiers, conditions, and qualifications exact.
 8. Preserve important detail. Move supporting rationale, examples, alternatives, and future considerations after the main answer or provide them on request.
-9. Remove stock assistant framing, filler, and generic sentences that could describe another project. Prefer concrete facts and plain words.
-10. Do not shorten by dropping requested facts or important distinctions. Do not add voice, opinions, rhetorical flourish, or extra structure unless the user asks.
+9. Do not shorten by dropping requested facts or important distinctions. Do not add voice, opinions, rhetorical flourish, or extra structure unless the user asks.
