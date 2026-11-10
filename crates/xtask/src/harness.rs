@@ -312,6 +312,11 @@ fn create_file_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_file(source, target)
 }
 
+/// Removes a link. Windows removes a directory link as a directory.
+fn remove_link(path: &Path) -> std::io::Result<()> {
+    fs::remove_file(path).or_else(|_| fs::remove_dir(path))
+}
+
 fn install_link(
     source: &Path,
     target: &Path,
@@ -322,10 +327,9 @@ fn install_link(
     }
     match path_status(target)? {
         // A link holds no data, so a stale or foreign one is replaced.
-        Some(file_type) if file_type.is_symlink() => fs::remove_file(target)
-            // Windows removes a directory link as a directory.
-            .or_else(|_| fs::remove_dir(target))
-            .with_context(|| format!("remove link {}", target.display()))?,
+        Some(file_type) if file_type.is_symlink() => {
+            remove_link(target).with_context(|| format!("remove link {}", target.display()))?;
+        }
         Some(_) => bail!("occupied managed path: {}", target.display()),
         None => {}
     }
@@ -351,8 +355,7 @@ fn manage_link(operation: Operation, source: &Path, target: &Path, safe_root: &P
         }
         Operation::Unlink => {
             if exact_link(source, target)? {
-                fs::remove_file(target)
-                    .with_context(|| format!("remove link {}", target.display()))?;
+                remove_link(target).with_context(|| format!("remove link {}", target.display()))?;
             }
         }
         Operation::Setup => {
@@ -491,7 +494,7 @@ fn reconcile_tree_visit(
                     bail!("stale managed link: {}", entry.path().display());
                 }
                 Operation::Setup | Operation::Unlink => {
-                    fs::remove_file(entry.path()).with_context(|| {
+                    remove_link(&entry.path()).with_context(|| {
                         format!("remove stale managed link {}", entry.path().display())
                     })?;
                 }
@@ -594,7 +597,7 @@ fn reconcile_owned_links(
         }
         match operation {
             Operation::Check => bail!("stale managed link: {}", entry.path().display()),
-            Operation::Setup | Operation::Unlink => fs::remove_file(entry.path())
+            Operation::Setup | Operation::Unlink => remove_link(&entry.path())
                 .with_context(|| format!("remove stale managed link {}", entry.path().display()))?,
         }
     }
@@ -654,7 +657,7 @@ fn manage_dependency_link(
         }
         Operation::Unlink => {
             if exact_link(source, target)? {
-                fs::remove_file(target)
+                remove_link(target)
                     .with_context(|| format!("remove dependency link {}", target.display()))?;
             }
         }
@@ -719,7 +722,7 @@ fn reconcile_dependency_links(
         match operation {
             Operation::Check => bail!("stale runtime dependency link: {}", entry.path().display()),
             Operation::Setup | Operation::Unlink => {
-                fs::remove_file(entry.path()).with_context(|| {
+                remove_link(&entry.path()).with_context(|| {
                     format!(
                         "remove stale runtime dependency link {}",
                         entry.path().display()
