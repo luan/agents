@@ -60,5 +60,6 @@
   "idleCompaction": true,
   "switchModelsOnFlag": false,
   "inputNeededNotifEnabled": false,
-  "outputStyle": "proactive-concise"
+  "outputStyle": "proactive-concise",
+  "promptCacheTtl": "1h"
 }
