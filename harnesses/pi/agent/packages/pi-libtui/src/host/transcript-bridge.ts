@@ -26,6 +26,13 @@ export type TranscriptEntry =
 
 export interface TranscriptProjection extends Component {
 	dispose(): void;
+	/**
+	 * First row of a source chat component that the projection rendered unchanged, from its latest
+	 * render. Display history uses it to keep the viewport still while older pages load.
+	 */
+	rowOf?(component: Component): number | undefined;
+	/** Rows produced by the latest render, or undefined when the output has changed since. */
+	readonly renderedRows?: number | undefined;
 }
 
 type AssistantMessage = Parameters<AssistantMessageComponent["updateContent"]>[0];

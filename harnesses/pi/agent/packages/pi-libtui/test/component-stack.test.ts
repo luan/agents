@@ -210,3 +210,44 @@ describe("ComponentStack", () => {
 		expect(stack.getSpans()).toEqual([]);
 	});
 });
+
+describe("ComponentStack geometry", () => {
+	test("reports the latest row of each direct child, including zero-height markers", () => {
+		const first = new TestComponent(["a", "b"]);
+		const marker = new TestComponent([]);
+		const last = new TestComponent(["c"]);
+		const trailing = new TestComponent([]);
+		const stack = new ComponentStack([first, marker, last, trailing]);
+		expect(stack.renderedRows).toBeUndefined();
+		expect(stack.rowOf(first)).toBeUndefined();
+		stack.render(10);
+		expect(stack.renderedRows).toBe(3);
+		expect(stack.rowOf(first)).toBe(0);
+		expect(stack.rowOf(marker)).toBe(2);
+		expect(stack.rowOf(last)).toBe(2);
+		expect(stack.rowOf(trailing)).toBe(3);
+		expect(stack.rowOf(new TestComponent(["x"]))).toBeUndefined();
+	});
+
+	test("forgets geometry when children or their output change until the next render", () => {
+		const first = new TestComponent(["a"]);
+		const second = new TestComponent(["b"]);
+		const stack = new ComponentStack([first, second]);
+		stack.render(10);
+		stack.setChildren([new TestComponent(["new"]), first, second]);
+		expect(stack.rowOf(second)).toBeUndefined();
+		stack.render(10);
+		expect(stack.rowOf(second)).toBe(2);
+		stack.invalidate();
+		expect(stack.renderedRows).toBeUndefined();
+	});
+
+	test("does not guess rows for children clipped from a bounded stack", () => {
+		const first = new TestComponent(["a", "b"]);
+		const clipped = new TestComponent(["c"]);
+		const stack = new ComponentStack([first, clipped], { maxHeight: 2 });
+		stack.render(10);
+		expect(stack.rowOf(first)).toBe(0);
+		expect(stack.rowOf(clipped)).toBeUndefined();
+	});
+});

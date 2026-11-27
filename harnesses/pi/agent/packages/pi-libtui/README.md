@@ -190,10 +190,13 @@ payload), `ToolActivity` (streaming, diff, terminal, and viewport state for a
 live surface), and `ToolOutput` for text streams. `mountTranscriptProjection`
 exposes native transcript entries, including compaction summaries, to a
 feature-owned component through a guarded Pi 1.0 adapter; unsupported hosts keep
-their native transcript. `installTranscriptHistory(tui)` separately leases
-Pi's display-only history methods so compaction appends its marker without
-clearing chat, and reload or resume renders the full saved branch. Model context
-is unaffected. The lease is opt-in, shared across installed copies, and restores
+their native transcript. `installTranscriptHistory(tui, { theme })` separately
+leases Pi's display-only history: saved compaction epochs before the model
+context load in front of Pi's live chat, one at a time as the fullscreen viewport
+reaches them, and are released when the reader returns to new output. A
+projection that implements `rowOf` and `renderedRows` (as `ComponentStack` does)
+lets the lease keep visible rows still while epochs load. Model context is
+unaffected. The lease is opt-in, shared across installed copies, and restores
 native methods when its last owner disposes it.
 Expanded output supports Page Up/Down after opening its header, mouse-wheel
 scrolling, and scrollbar dragging. Nested viewports reserve separate scrollbar
