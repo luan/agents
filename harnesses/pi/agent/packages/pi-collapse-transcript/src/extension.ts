@@ -33,7 +33,7 @@ export default function transcriptExtension(pi: ExtensionAPI): void {
 		}
 		ctx.ui.setWidget("pi-collapse-transcript.host", (tui, theme) => {
 			unmount?.();
-			const releaseHistory = installTranscriptHistory(tui);
+			const releaseHistory = installTranscriptHistory(tui, { theme });
 			releasePreparation();
 			const timings = new ActivityTimings();
 			let previousLeaf: string | null | undefined;

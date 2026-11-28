@@ -43,6 +43,7 @@ export class ComponentStack implements Component, Focusable {
 	private activeChild: number | undefined;
 	private spans: ComponentStackSpan[] = [];
 	private renderedHeight = 0;
+	private measured = false;
 	private renderedWidth = 0;
 	private hoveredSpan: ComponentStackSpan | undefined;
 	private capturedSpan: ComponentStackSpan | undefined;
@@ -83,6 +84,7 @@ export class ComponentStack implements Component, Focusable {
 			if (next && isFocusable(next)) next.focused = true;
 		}
 		this.spans = [];
+		this.measured = false;
 		this.hoveredSpan = undefined;
 		this.capturedSpan = undefined;
 	}
@@ -110,6 +112,26 @@ export class ComponentStack implements Component, Focusable {
 		return this.spans.map((span) => ({ ...span }));
 	}
 
+	/** Rows produced by the latest render, or undefined after the children or their output changed. */
+	get renderedRows(): number | undefined {
+		return this.measured ? this.renderedHeight : undefined;
+	}
+
+	/**
+	 * First row of a direct child in the latest render. A child that rendered no rows reports the row
+	 * where the next visible child starts, so zero-height markers still locate their position.
+	 */
+	rowOf(child: Component): number | undefined {
+		if (!this.measured) return undefined;
+		const index = this.stackChildren.indexOf(child);
+		if (index < 0) return undefined;
+		const next = this.spans.find((span) => span.index >= index);
+		if (next) return next.row;
+		// A height-bounded stack may have clipped children after its last visible span.
+		const bounded = this.options.height !== undefined || this.options.maxHeight !== undefined;
+		return bounded ? undefined : this.renderedHeight;
+	}
+
 	handleInput(data: string): void {
 		if ((this.options.inputMode ?? "active") === "all") {
 			for (const child of this.stackChildren) child.handleInput?.(data);
@@ -126,6 +148,7 @@ export class ComponentStack implements Component, Focusable {
 
 	invalidate(): void {
 		this.spans = [];
+		this.measured = false;
 		this.hoveredSpan = undefined;
 		this.capturedSpan = undefined;
 		for (const child of this.stackChildren) child.invalidate();
@@ -187,6 +210,7 @@ export class ComponentStack implements Component, Focusable {
 		this.capturedSpan = remap(this.capturedSpan);
 		this.spans = spans;
 		this.renderedHeight = lines.length;
+		this.measured = true;
 		return lines;
 	}
 
