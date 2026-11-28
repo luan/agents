@@ -2,11 +2,12 @@ import { InteractiveMode, type SessionEntry, type SessionManager, type Theme } f
 import { type Component, Container, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { tuiTheme } from "../color/theme.ts";
 import {
+	type ChunkWindow,
 	defaultWindow,
-	type EpochWindow,
-	historyEpochs,
+	type HistoryBreaks,
+	historyChunks,
 	rebaseWindow,
-	type TranscriptEpoch,
+	type TranscriptChunk,
 } from "./transcript-epochs.ts";
 
 const PROTOCOL = "pi-libtui/transcript-history/v2" as const;
@@ -15,10 +16,14 @@ const OWNER = Symbol.for(`${PROTOCOL}/owner`);
 // An installed copy that still renders the full branch owns these methods; never stack on top of it.
 const LEGACY = Symbol.for("pi-libtui/transcript-history/v1");
 const PROJECTION = Symbol.for("pi-libtui/transcript-projection/v1");
-/** Older epochs loaded next to the live transcript while the reader follows new output. */
-const DEFAULT_PAGES = 1;
-/** Loaded epochs before off-screen pages are released while the reader scrolls. */
-const MAX_PAGES = 4;
+/** Saved entries loaded next to the live transcript while the reader follows new output. */
+const DEFAULT_ENTRIES = 60;
+/** Page size in displayed entries: the smallest page that ends at a visual break, and the hard cap. */
+const CHUNK_LIMITS = { min: 12, max: 120 } as const;
+/** Screens of loaded history kept ahead of the viewport before the next page loads. */
+const LOAD_SCREENS = 1;
+/** Pages further than this many screens from the viewport are released. */
+const KEEP_SCREENS = 3;
 
 /** Options for one TUI's display-history lease. */
 export interface TranscriptHistoryOptions {
@@ -46,15 +51,17 @@ interface NativeScrollView {
 	scrollTo(scrollTop: number, options?: { disableFollow?: boolean }): void;
 	updateLayout(contentHeight: number, viewportHeight: number, requestRender?: () => void): void;
 }
+/** Scroll view methods that move the viewport on behalf of the reader. */
+const SCROLL_METHODS = ["scrollTo", "scrollBy", "scrollToStart", "scrollToEnd"] as const;
 interface Projection {
 	readonly renderedRows: number | undefined;
 	rowOf(component: Component): number | undefined;
+	historyBreaks?: HistoryBreaks<SessionEntry>;
 }
 interface Geometry {
 	readonly height: number;
 	rowOf(component: Component): number | undefined;
 }
-type UpdateLayout = NativeScrollView["updateLayout"];
 // type-boundary: Pi 1.0's private transcript methods and fields, and cross-copy leases; the guards below validate them before use.
 type NativeValue = unknown;
 function record(value: NativeValue): value is Record<PropertyKey, NativeValue> {
@@ -89,7 +96,8 @@ function projection(value: NativeValue): value is Projection {
 	return (
 		record(value) &&
 		typeof value.rowOf === "function" &&
-		(value.renderedRows === undefined || typeof value.renderedRows === "number")
+		(value.renderedRows === undefined || typeof value.renderedRows === "number") &&
+		(value.historyBreaks === undefined || typeof value.historyBreaks === "function")
 	);
 }
 function historyBridge(value: NativeValue): value is HistoryBridge {
@@ -106,8 +114,8 @@ function historyOwner(value: NativeValue): value is HistoryOwner {
 
 /**
  * Show saved history beyond the model context without loading all of it. Pi keeps rendering the
- * live context; older compaction epochs load above it as the fullscreen viewport approaches them
- * and unload when the reader returns to new output. Replace when Pi exposes a transcript-history API.
+ * live context; older history loads above it in small pages as the fullscreen viewport approaches
+ * them and unloads when the reader returns to new output. Replace when Pi exposes a transcript-history API.
  */
 export function installTranscriptHistory(tui: TUI, options?: TranscriptHistoryOptions): () => void {
 	return ensureBridge()?.acquire(tui, options) ?? (() => {});
@@ -118,7 +126,7 @@ export function retainTranscriptHistory(): () => void {
 	return ensureBridge()?.retain() ?? (() => {});
 }
 
-/** Marks where a loaded epoch starts; scroll anchoring measures it without rendering visible rows. */
+/** Marks where a loaded page starts; scroll anchoring measures it without rendering visible rows. */
 class PageStart implements Component {
 	constructor(private readonly rendered: (width: number) => void) {}
 	render(width: number): string[] {
@@ -128,7 +136,7 @@ class PageStart implements Component {
 	invalidate(): void {}
 }
 
-/** A muted notice for epochs that exist but are not loaded. */
+/** A muted notice for saved history that exists but is not loaded. */
 class HistoryMarker implements Component {
 	text = "";
 	constructor(
@@ -157,8 +165,8 @@ function plural(count: number): string {
 /** The loaded slice of one interactive mode's saved history, kept in front of Pi's live chat. */
 class HistoryWindow {
 	theme: Theme | undefined;
-	private epochs: TranscriptEpoch<SessionEntry>[] = [];
-	private window: EpochWindow = { lo: 0, hi: -1 };
+	private chunks: TranscriptChunk<SessionEntry>[] = [];
+	private window: ChunkWindow = { lo: 0, hi: -1 };
 	private readonly pages = new Map<string, Page>();
 	private owned = new Set<Component>();
 	private readonly earlier: HistoryMarker;
@@ -167,7 +175,13 @@ class HistoryWindow {
 	private contentFrame = false;
 	private width = 0;
 	private fallback: Geometry | undefined;
-	private scroll: { view: NativeScrollView; patched: UpdateLayout; own: UpdateLayout | undefined } | undefined;
+	/** The projection whose visual breaks grouped the current pages. */
+	private grouping: Projection | undefined;
+	/** Viewport moves made by the reader or Pi, not by anchoring; each page load waits for a new one. */
+	private moves = 0;
+	private loadedAtMove = -1;
+	private anchoring = false;
+	private scroll: { view: NativeScrollView; restore: (() => void)[] } | undefined;
 
 	constructor(
 		private readonly mode: NativeMode,
@@ -178,18 +192,22 @@ class HistoryWindow {
 		this.later = new HistoryMarker(rendered, () => this.theme);
 	}
 
-	/** Pi rebuilt its chat from the model context; recompute history and restore the loaded prefix. */
+	/** Pi rebuilt its chat from the model context; regroup history and restore the loaded prefix. */
 	sync(): void {
 		this.attachScroll();
+		const installed = this.projection();
+		this.grouping = installed?.historyBreaks ? installed : undefined;
+		const grouping = this.grouping;
+		const breaks = grouping?.historyBreaks
+			? (entries: readonly SessionEntry[]) => grouping.historyBreaks!(entries)
+			: undefined;
 		const context = new Set(this.mode.sessionManager.buildContextEntries().map((entry) => entry.id));
-		const epochs = historyEpochs(this.mode.sessionManager.getBranch(), context);
-		const sameSession = epochs[0]?.entries[0]?.id === this.epochs[0]?.entries[0]?.id;
+		const chunks = historyChunks(this.mode.sessionManager.getBranch(), context, CHUNK_LIMITS, breaks);
 		const following = this.scroll?.view.isFollowingEnd ?? true;
-		this.window =
-			following || !sameSession
-				? defaultWindow(epochs.length, DEFAULT_PAGES)
-				: rebaseWindow(this.window, this.epochs.length, epochs.length, DEFAULT_PAGES);
-		this.epochs = epochs;
+		this.window = following
+			? defaultWindow(chunks, DEFAULT_ENTRIES)
+			: rebaseWindow(this.window, this.chunks, chunks, DEFAULT_ENTRIES);
+		this.chunks = chunks;
 		this.pending = undefined;
 		this.apply();
 	}
@@ -198,14 +216,8 @@ class HistoryWindow {
 		this.removePrefix();
 		this.pages.clear();
 		this.pending = undefined;
-		if (this.scroll) {
-			const { view, patched, own } = this.scroll;
-			if (view.updateLayout === patched) {
-				if (own) Reflect.set(view, "updateLayout", own);
-				else Reflect.deleteProperty(view, "updateLayout");
-			}
-			this.scroll = undefined;
-		}
+		for (const restore of this.scroll?.restore ?? []) restore();
+		this.scroll = undefined;
 		this.mode.ui.requestRender();
 	}
 
@@ -218,22 +230,44 @@ class HistoryWindow {
 		if (this.scroll) return;
 		const view: NativeValue = Reflect.get(this.mode, "transcriptScrollView");
 		if (!scrollView(view)) return;
-		const original = view.updateLayout;
-		const own = Object.hasOwn(view, "updateLayout") ? original : undefined;
-		const window = this;
-		const patched: UpdateLayout = function (this: NativeScrollView, contentHeight, viewportHeight, requestRender) {
-			Reflect.apply(original, this, [contentHeight, viewportHeight, requestRender]);
-			window.afterLayout(this, contentHeight);
+		const restore: (() => void)[] = [];
+		const patch = (name: string, after: (target: NativeScrollView, args: readonly NativeValue[]) => void): void => {
+			const original: NativeValue = Reflect.get(view, name);
+			if (typeof original !== "function") return;
+			const own = Object.hasOwn(view, name);
+			const patched = function (this: NativeScrollView, ...args: NativeValue[]): NativeValue {
+				const result: NativeValue = Reflect.apply(original, this, args);
+				after(this, args);
+				return result;
+			};
+			Reflect.set(view, name, patched);
+			restore.push(() => {
+				if (Reflect.get(view, name) !== patched) return;
+				if (own) Reflect.set(view, name, original);
+				else Reflect.deleteProperty(view, name);
+			});
 		};
-		Reflect.set(view, "updateLayout", patched);
-		this.scroll = { view, patched, own };
+		patch("updateLayout", (target, [contentHeight]) =>
+			this.afterLayout(target, typeof contentHeight === "number" ? contentHeight : 0),
+		);
+		for (const name of SCROLL_METHODS)
+			patch(name, () => {
+				if (!this.anchoring) this.moves++;
+			});
+		this.scroll = { view, restore };
 	}
 
 	/** Runs after every fullscreen layout, including scroll-only frames that reuse component output. */
 	private afterLayout(view: NativeScrollView, contentHeight: number): void {
 		const content = this.contentFrame;
 		this.contentFrame = false;
-		if (!this.epochs.length) return;
+		if (!this.chunks.length) return;
+		const installed = this.projection();
+		if (installed?.historyBreaks && installed !== this.grouping) {
+			// The projection mounted after Pi restored history; regroup pages at its visual breaks.
+			this.sync();
+			return;
+		}
 		const geometry = this.geometry(content);
 		if (!geometry) return;
 		if (this.pending) {
@@ -242,17 +276,23 @@ class HistoryWindow {
 			const row = geometry.rowOf(this.pending.anchor);
 			const delta = row === undefined ? 0 : row - this.pending.row;
 			this.pending = undefined;
-			if (delta) view.scrollTo(view.scrollTop + delta, { disableFollow: true });
+			if (!delta) return;
+			this.anchoring = true;
+			try {
+				view.scrollTo(view.scrollTop + delta, { disableFollow: true });
+			} finally {
+				this.anchoring = false;
+			}
 			return;
 		}
-		const offset = contentHeight - geometry.height;
-		const top = view.scrollTop - offset;
+		const top = view.scrollTop - (contentHeight - geometry.height);
 		const height = Math.max(1, view.viewportHeight);
 		const { lo, hi } = this.window;
-		const count = this.epochs.length;
+		const last = this.chunks.length - 1;
 		if (view.isFollowingEnd) {
-			if (hi < count - 1) {
-				this.window = defaultWindow(count, DEFAULT_PAGES);
+			const home = defaultWindow(this.chunks, DEFAULT_ENTRIES);
+			if (hi < last) {
+				this.window = home;
 				this.apply();
 				return;
 			}
@@ -264,9 +304,9 @@ class HistoryWindow {
 			}
 			// Release pages far above new output; the distance prevents reloading them immediately.
 			let next = lo;
-			while (hi - next + 1 > DEFAULT_PAGES) {
+			while (next < home.lo) {
 				const end = this.startRow(next + 1, geometry);
-				if (end === undefined || end > top - 3 * height) break;
+				if (end === undefined || end > top - KEEP_SCREENS * height) break;
 				next++;
 			}
 			if (next !== lo) {
@@ -275,37 +315,39 @@ class HistoryWindow {
 			}
 			return;
 		}
-		if (lo > 0 && top <= height) {
-			this.move({ lo: lo - 1, hi }, top, height, geometry);
-			return;
-		}
-		if (hi < count - 1) {
+		let { lo: from, hi: to } = this.window;
+		// One page per viewport move. Loading holds the visible rows still, so a viewport kept near an edge
+		// without new moves stops after one page instead of pulling in the whole history.
+		const loading = this.moves !== this.loadedAtMove;
+		if (loading && lo > 0 && top <= LOAD_SCREENS * height) from--;
+		else if (loading && hi < last) {
 			const gap = geometry.rowOf(this.later);
-			if (gap !== undefined && gap <= top + 2 * height) this.move({ lo, hi: hi + 1 }, top, height, geometry);
+			if (gap !== undefined && gap <= top + (1 + LOAD_SCREENS) * height) to++;
 		}
+		const loaded = from !== lo || to !== hi;
+		// Release measured pages that lie well outside the viewport.
+		while (from >= lo && from < to && from < hi) {
+			const end = this.startRow(from + 1, geometry);
+			if (end === undefined || end > top - KEEP_SCREENS * height) break;
+			from++;
+		}
+		while (to <= hi && to > from) {
+			const start = this.startRow(to, geometry);
+			if (start === undefined || start < top + (1 + KEEP_SCREENS) * height) break;
+			to--;
+		}
+		if (from === lo && to === hi) return;
+		if (loaded) this.loadedAtMove = this.moves;
+		this.move({ lo: from, hi: to }, geometry);
 	}
 
-	private move(target: EpochWindow, top: number, height: number, geometry: Geometry): void {
+	private move(target: ChunkWindow, geometry: Geometry): void {
 		const previous = this.window;
-		let { lo, hi } = target;
-		while (hi - lo + 1 > MAX_PAGES) {
-			if (lo < previous.lo) {
-				// Loading earlier: release the newest page only once it is well below the viewport.
-				const start = this.startRow(hi, geometry);
-				if (start === undefined || start < top + 2 * height) break;
-				hi--;
-			} else {
-				// Loading later: release the oldest page only once it ends well above the viewport.
-				const end = lo + 1 <= previous.hi ? this.startRow(lo + 1, geometry) : geometry.rowOf(this.later);
-				if (end === undefined || end > top - height) break;
-				lo++;
-			}
-		}
 		// Anchor the first page that stays loaded, so changes above it do not move what the reader sees.
-		const anchorIndex = Math.max(lo, previous.lo);
-		const anchor = anchorIndex <= previous.hi ? this.loadedPage(anchorIndex)?.start : undefined;
+		const first = Math.max(target.lo, previous.lo);
+		const anchor = first <= Math.min(target.hi, previous.hi) ? this.loadedPage(first)?.start : undefined;
 		const row = anchor ? geometry.rowOf(anchor) : undefined;
-		this.window = { lo, hi };
+		this.window = target;
 		this.apply();
 		if (anchor && row !== undefined) this.pending = { anchor, row };
 	}
@@ -316,15 +358,20 @@ class HistoryWindow {
 	}
 
 	private loadedPage(index: number): Page | undefined {
-		const epoch = this.epochs[index];
-		return epoch ? this.pages.get(epoch.key) : undefined;
+		const chunk = this.chunks[index];
+		return chunk ? this.pages.get(chunk.key) : undefined;
 	}
 
-	private geometry(content: boolean): Geometry | undefined {
+	private projection(): Projection | undefined {
 		const roots: NativeValue = Reflect.get(this.mode.ui, "children");
 		const document: NativeValue = Array.isArray(roots) ? roots[0] : undefined;
 		const installed: NativeValue = record(document) ? Reflect.get(document, PROJECTION) : undefined;
-		if (projection(installed)) {
+		return projection(installed) ? installed : undefined;
+	}
+
+	private geometry(content: boolean): Geometry | undefined {
+		const installed = this.projection();
+		if (installed) {
 			const height = installed.renderedRows;
 			return height === undefined ? undefined : { height, rowOf: (component) => installed.rowOf(component) };
 		}
@@ -344,24 +391,29 @@ class HistoryWindow {
 
 	private apply(): void {
 		const { lo, hi } = this.window;
-		const count = this.epochs.length;
+		const last = this.chunks.length - 1;
 		const prefix: Component[] = [];
 		const retained = new Set<string>();
 		// Only the fullscreen viewport loads on scroll; regular scrollback shows the default window.
 		const scrolls = this.mode.ui.mode === "fullscreen";
 		if (lo > 0) {
-			this.earlier.text = `▲ ${plural(lo)} before this${scrolls ? " · scroll up to load" : ""}`;
+			const chunk = this.chunks[lo]!;
+			const windows = chunk.epoch + (chunk.first ? 0 : 1);
+			this.earlier.text = `▲ Earlier history · ${plural(windows)}${scrolls ? " · scroll up to load" : ""}`;
 			prefix.push(this.earlier);
 		}
 		for (let index = lo; index <= hi; index++) {
-			const epoch = this.epochs[index]!;
-			const page = this.pages.get(epoch.key) ?? this.build(epoch);
-			this.pages.set(epoch.key, page);
-			retained.add(epoch.key);
+			const chunk = this.chunks[index]!;
+			const page = this.pages.get(chunk.key) ?? this.build(chunk);
+			this.pages.set(chunk.key, page);
+			retained.add(chunk.key);
 			prefix.push(page.start, ...page.components);
 		}
-		if (hi < count - 1) {
-			this.later.text = `▼ ${plural(count - 1 - hi)} after this${scrolls ? " · scroll down to load" : ""}`;
+		if (hi < last) {
+			const chunk = this.chunks[hi]!;
+			const next = this.chunks[hi + 1]!;
+			const windows = this.chunks[last]!.epoch - chunk.epoch + (next.epoch === chunk.epoch ? 1 : 0);
+			this.later.text = `▼ Later history · ${plural(windows)}${scrolls ? " · scroll down to load" : ""}`;
 			prefix.push(this.later);
 		}
 		for (const key of [...this.pages.keys()]) if (!retained.has(key)) this.pages.delete(key);
@@ -382,8 +434,8 @@ class HistoryWindow {
 		this.owned = new Set();
 	}
 
-	/** Render one epoch with Pi's own entry renderer into a detached container. */
-	private build(epoch: TranscriptEpoch<SessionEntry>): Page {
+	/** Render one page with Pi's own entry renderer into a detached container. */
+	private build(chunk: TranscriptChunk<SessionEntry>): Page {
 		const mode = this.mode;
 		const scratch = new Container();
 		const chat = mode.chatContainer;
@@ -393,7 +445,7 @@ class HistoryWindow {
 		Reflect.set(mode, "pendingTools", new Map());
 		Reflect.set(mode, "chatContainer", scratch);
 		try {
-			this.renderEntries(mode, epoch.entries);
+			this.renderEntries(mode, chunk.entries);
 		} finally {
 			Reflect.set(mode, "chatContainer", chat);
 			Reflect.set(mode, "pendingTools", pendingTools);

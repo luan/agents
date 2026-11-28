@@ -1,4 +1,4 @@
-import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
+import { AssistantMessageComponent, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { type Component, type TUI, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { sanitizeTuiFieldPreview } from "../content/terminal-text.ts";
 
@@ -33,6 +33,11 @@ export interface TranscriptProjection extends Component {
 	rowOf?(component: Component): number | undefined;
 	/** Rows produced by the latest render, or undefined when the output has changed since. */
 	readonly renderedRows?: number | undefined;
+	/**
+	 * For one compaction epoch of saved entries, whether a history page may start before each entry
+	 * without splitting one of the projection's visual groups. Without it, pages start at any step.
+	 */
+	historyBreaks?(entries: readonly SessionEntry[]): readonly boolean[];
 }
 
 type AssistantMessage = Parameters<AssistantMessageComponent["updateContent"]>[0];

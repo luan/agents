@@ -13,10 +13,10 @@ thinking Markdown. User messages, assistant prose, errors, and other entries sta
 visible and separate one run from the next. Compaction draws a full-width,
 muted horizontal divider with its own summary disclosure, not a padded card.
 Compacting model context does not erase the visible conversation. Saved history
-before the model context loads one compaction window at a time: in fullscreen,
-scrolling to the top loads the previous window in place, and returning to new
-output releases the older ones. Sessions with hundreds of compactions open as
-quickly as sessions with one.
+before the model context loads in small pages: in fullscreen, scrolling toward
+the top loads the previous page in place, and returning to new output releases
+the older ones. Sessions with hundreds of compactions open as quickly as
+sessions with one.
 
 It is a Pi extension, not a model-facing tool. It changes only how existing
 transcript components are laid out on screen. Session history, tool output, and
@@ -67,11 +67,14 @@ its work on `session_start`:
   unchanged and end the current run.
 - Streaming updates keep the current fold state and refresh the header summary
   as new headings arrive. Loading a session, compacting, or loading an older
-  window rebuilds those entries as collapsed sections.
-- `▲ N context windows before this` and `▼ N context windows after this` mark
-  saved history that is not loaded. Scrolling to a marker loads the next window
-  without moving the rows on screen; at most four windows stay loaded while you
-  read, and windows far off screen are released.
+  page rebuilds those entries as collapsed sections.
+- `▲ Earlier history · N context windows` and `▼ Later history · N context
+  windows` mark saved history that is not loaded. Scrolling within a screen of a
+  marker loads one page per scroll without moving the rows on screen. Pages more
+  than three screens away are released.
+- Pages start only where a fold already ends, such as at a user message or
+  assistant prose, so loading or releasing a page never splits a fold. Only a
+  run longer than 120 entries is split.
 - On `session_shutdown`, or when the widget is disposed, the projection is
   released and Pi's native rendering returns.
 
@@ -124,11 +127,14 @@ document layout does not match, when a node is not a recognised assistant or
 tool component, or when a projection is already installed, the transcript is
 left untouched. Unknown nodes and native error notices render as they are.
 Its separate `installTranscriptHistory` lease keeps Pi's native chat for the
-model context and places a window of saved compaction epochs in front of it.
-Each epoch is rendered by Pi's own entry renderer into a detached container,
-without disturbing live tool tracking. The lease watches the fullscreen
-transcript scroll view to load and release epochs, and uses the projection's
-row geometry to hold the viewport still when content above it changes. Pi still
+model context and places a window of saved history pages in front of it. Pages
+never cross a compaction or separate a tool call from its result, and the
+projection's `historyBreaks` chooses where they start. Each page is rendered by
+Pi's own entry renderer into a detached container, without disturbing live tool
+tracking. The lease watches the fullscreen transcript scroll view to load and
+release pages, loads at most one page per viewport move, and uses the
+projection's row geometry to hold the viewport still when content above it
+changes. Pi still
 owns model context, compaction, status cleanup, queued input, cancellation, and
 retries. The lease fails open on unsupported hosts and restores native methods
 on disposal.
@@ -164,5 +170,7 @@ retained display history, chronological notices, resumed history, and unchanged
 model-context compaction.
 `test/history-window.test.ts` opens sessions with many compactions in fullscreen
 and checks the default window, loading on scroll without moving visible rows,
-releasing off-screen windows, loading them back in order, and returning to
-the default window at new output.
+one page per move while the viewport is held at the top, page starts at fold
+boundaries, releasing off-screen pages, loading them back in order, and
+returning to the default window at new output. `test/history-breaks.test.ts`
+checks where a page may start without splitting a fold.

@@ -1,4 +1,4 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { SessionEntry, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Spacer, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	ComponentStack,
@@ -10,6 +10,7 @@ import {
 import { ToolActivity, type TranscriptEntry } from "@luan.sh/pi-libtui/tool";
 import { ActivityTimings, formatActivityDuration } from "./activity-timing.ts";
 import { CompactionSection } from "./compaction-section.ts";
+import { activityBreaks } from "./history-breaks.ts";
 
 type ActivityEntry = Extract<TranscriptEntry, { kind: "thinking" | "tool" }>;
 
@@ -129,6 +130,11 @@ export class ActivityTranscript extends ComponentStack {
 		private readonly now: () => number = Date.now,
 	) {
 		super();
+	}
+
+	/** History pages start only where a fold already ends, so loading one never splits a fold. */
+	historyBreaks(entries: readonly SessionEntry[]): readonly boolean[] {
+		return activityBreaks(entries);
 	}
 
 	beginTurn(): void {
