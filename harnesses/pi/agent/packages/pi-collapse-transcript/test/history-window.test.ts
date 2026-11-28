@@ -64,7 +64,7 @@ function assistant(
  * Each epoch is an autonomous turn: one request, many tool steps folded by the transcript, prose every
  * fourth step, and a final answer taller than the viewport. Pages hold a few steps, not whole epochs.
  */
-function seed(manager: SessionManager, epochs = EPOCHS, steps = STEPS): void {
+function seed(manager: SessionManager, epochs = EPOCHS, steps = STEPS, proseLines = 1): void {
 	for (let epoch = 0; epoch <= epochs; epoch++) {
 		if (epoch > 0) manager.appendCompaction(`SUMMARY ${epoch}`, null, 1_000 * epoch);
 		manager.appendMessage({ role: "user", content: `REQUEST ${epoch}`, timestamp: epoch });
@@ -72,7 +72,10 @@ function seed(manager: SessionManager, epochs = EPOCHS, steps = STEPS): void {
 			const id = `call-${epoch}-${step}`;
 			const lead =
 				step % 4 === 3
-					? { type: "text" as const, text: `PROSE ${epoch}.${step}` }
+					? {
+							type: "text" as const,
+							text: Array.from({ length: proseLines }, (_, line) => `PROSE ${epoch}.${step}.${line}`).join("\n\n"),
+						}
 					: { type: "thinking" as const, thinking: `thinking ${epoch}.${step}` };
 			manager.appendMessage(
 				assistant([lead, { type: "toolCall", id, name: "read", arguments: { path: `f-${epoch}-${step}.ts` } }]),
@@ -316,6 +319,58 @@ test("scrolling down through released pages loads them back in order", async () 
 		// Every saved epoch was shown on the way down.
 		for (let epoch = 0; epoch < EPOCHS; epoch++) expect(seen.has(epoch)).toBe(true);
 	});
+});
+
+test("releasing a tall page above the reader near the end of the transcript keeps the visible rows still", async () => {
+	await withSession(
+		(manager) => {
+			// A tall page, then a page of about four screens, then a short live context. Releasing the tall
+			// page while reading the second shrinks the transcript below the current scroll position.
+			const answer = (label: string, lines: number) =>
+				assistant(
+					[{ type: "text", text: Array.from({ length: lines }, (_, line) => `${label} ${line}`).join("\n\n") }],
+					"stop",
+				);
+			manager.appendMessage({ role: "user", content: "REQUEST TALL", timestamp: 0 });
+			manager.appendMessage(answer("tall", 150));
+			manager.appendCompaction("SUMMARY 1", null, 1_000);
+			manager.appendMessage({ role: "user", content: "REQUEST NEXT", timestamp: 1 });
+			manager.appendMessage(answer("next", 75));
+			manager.appendCompaction("SUMMARY 2", null, 2_000);
+			manager.appendMessage({ role: "user", content: "REQUEST LIVE", timestamp: 2 });
+			manager.appendMessage(answer("live", 2));
+		},
+		({ tui, frame, screen, chat }) => {
+			frame();
+			const marker = () =>
+				chat.children.some(
+					(child) => child.constructor.name === "HistoryMarker" && /▲/u.test(String(Reflect.get(child, "text"))),
+				);
+			for (let step = 0; step < 400 && (tui.viewportTop > 0 || marker()); step++) {
+				tui.scrollToTop();
+				frame();
+				frame();
+			}
+			expect(marker()).toBe(false);
+			// Rows without the scrollbar column and the bottom rows, where the scroll-to-end hint is drawn.
+			const body = () =>
+				screen()
+					.slice(0, ROWS - 8)
+					.map((line) => line.slice(0, COLUMNS - 2));
+			let previous = body();
+			let steps = 0;
+			for (; steps < 5000 && !tui.isFollowingOutput; steps++) {
+				tui.scrollBy(2);
+				frame();
+				frame();
+				const current = body();
+				if (!tui.isFollowingOutput) expect(current.slice(0, -2)).toEqual(previous.slice(2));
+				previous = current;
+			}
+			expect(tui.isFollowingOutput).toBe(true);
+			expect(steps).toBeGreaterThan(100);
+		},
+	);
 });
 
 test("a session with many compactions builds components only for the loaded pages", async () => {

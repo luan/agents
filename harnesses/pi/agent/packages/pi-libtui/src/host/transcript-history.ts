@@ -171,7 +171,12 @@ class HistoryWindow {
 	private owned = new Set<Component>();
 	private readonly earlier: HistoryMarker;
 	private readonly later: HistoryMarker;
-	private pending: { anchor: Component; row: number } | undefined;
+	/**
+	 * A prefix change waiting for the frame that renders it: the anchor's row before the change, and the reader's
+	 * scroll position in the old layout. Pi clamps the scroll position when content above shrinks, so the
+	 * correction starts from the recorded position rather than the clamped one.
+	 */
+	private pending: { anchor: Component; row: number; scrollTop: number } | undefined;
 	private contentFrame = false;
 	private width = 0;
 	private fallback: Geometry | undefined;
@@ -251,8 +256,10 @@ class HistoryWindow {
 			this.afterLayout(target, typeof contentHeight === "number" ? contentHeight : 0),
 		);
 		for (const name of SCROLL_METHODS)
-			patch(name, () => {
-				if (!this.anchoring) this.moves++;
+			patch(name, (target) => {
+				if (this.anchoring) return;
+				this.moves++;
+				if (this.pending) this.pending.scrollTop = target.scrollTop;
 			});
 		this.scroll = { view, restore };
 	}
@@ -273,13 +280,14 @@ class HistoryWindow {
 		if (this.pending) {
 			// The prefix changed above the reader; wait for the frame that renders it, then hold the anchor still.
 			if (!content) return;
-			const row = geometry.rowOf(this.pending.anchor);
-			const delta = row === undefined ? 0 : row - this.pending.row;
+			const { anchor, row: before, scrollTop } = this.pending;
+			const row = geometry.rowOf(anchor);
+			const next = scrollTop + (row === undefined ? 0 : row - before);
 			this.pending = undefined;
-			if (!delta) return;
+			if (next === view.scrollTop) return;
 			this.anchoring = true;
 			try {
-				view.scrollTo(view.scrollTop + delta, { disableFollow: true });
+				view.scrollTo(next, { disableFollow: true });
 			} finally {
 				this.anchoring = false;
 			}
@@ -338,10 +346,10 @@ class HistoryWindow {
 		}
 		if (from === lo && to === hi) return;
 		if (loaded) this.loadedAtMove = this.moves;
-		this.move({ lo: from, hi: to }, geometry);
+		this.move({ lo: from, hi: to }, geometry, view.scrollTop);
 	}
 
-	private move(target: ChunkWindow, geometry: Geometry): void {
+	private move(target: ChunkWindow, geometry: Geometry, scrollTop: number): void {
 		const previous = this.window;
 		// Anchor the first page that stays loaded, so changes above it do not move what the reader sees.
 		const first = Math.max(target.lo, previous.lo);
@@ -349,7 +357,7 @@ class HistoryWindow {
 		const row = anchor ? geometry.rowOf(anchor) : undefined;
 		this.window = target;
 		this.apply();
-		if (anchor && row !== undefined) this.pending = { anchor, row };
+		if (anchor && row !== undefined) this.pending = { anchor, row, scrollTop };
 	}
 
 	private startRow(index: number, geometry: Geometry): number | undefined {
